@@ -1,0 +1,182 @@
+// ============================================================
+//  Temporal Contract DSL — Pest Grammar
+// ============================================================
+
+// ---------- Lexical ----------
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ ("//" ~ (!"\n" ~ ANY)*)
+             | ("/*" ~ (!"*/" ~ ANY)* ~ "*/") }
+
+// ---------- Top-level ----------
+spec_file = { SOI ~ item* ~ EOI }
+item = _{
+      import_decl
+    | type_decl
+    | entity_decl
+    | event_decl
+    | stream_decl
+    | signal_decl
+    | var_decl
+    | contract_decl
+    | rule_decl
+}
+
+// ---------- Imports ----------
+import_decl = { "import" ~ path_ident ~ ("as" ~ ident)? }
+
+// ---------- Types ----------
+type_decl   = { "type" ~ ident ~ "=" ~ type_expr }
+type_expr   = { scalar_type | list_type | record_type | ident }
+scalar_type = { "int" | "float" | "bool" | "string" | "timestamp" | "duration" }
+list_type   = { "[" ~ type_expr ~ "]" }
+record_type = { "{" ~ field_def ~ ("," ~ field_def)* ~ "}" }
+field_def   = { ident ~ ":" ~ type_expr }
+
+// ---------- Entities ----------
+entity_decl    = { "entity" ~ ident ~ "{" ~ entity_member* ~ "}" }
+entity_member  = _{
+      key_decl
+    | states_decl
+    | initial_decl
+    | transition_decl
+    | entity_invariant
+}
+key_decl     = { "key:" ~ ident }
+states_decl  = { "states:" ~ "[" ~ ident ~ ("," ~ ident)* ~ "]" }
+initial_decl = { "initial:" ~ ident }
+transition_decl = {
+    "transition" ~ ident ~ "{"
+        ~ "from:" ~ ident
+        ~ "to:"   ~ ident
+        ~ ("when:" ~ formula)?
+        ~ ("emit:" ~ string_lit)?
+    ~ "}"
+}
+entity_invariant = { "invariant:" ~ formula }
+
+// ---------- Events ----------
+event_decl = { "event" ~ ident ~ ("{" ~ field_def ~ ("," ~ field_def)* ~ "}")? }
+
+// ---------- Streams ----------
+stream_decl    = { "stream" ~ ident ~ "=" ~ stream_expr }
+stream_expr    = { stream_primary ~ stream_op* }
+stream_primary = {
+      stream_source
+    | stream_ref
+    | "(" ~ stream_expr ~ ")"
+}
+stream_source = { "Stream" ~ "[" ~ ident ~ "]" }
+stream_ref    = { path_ident | ident }
+
+stream_op = _{
+      filter_op
+    | map_op
+    | union_op
+    | intersect_op
+    | window_op
+}
+filter_op    = { ".filter(" ~ formula ~ ")" }
+map_op       = { ".map(" ~ formula ~ ")" }
+union_op     = { ".union(" ~ stream_expr ~ ")" }
+intersect_op = { ".intersect(" ~ stream_expr ~ ")" }
+window_op    = { ".window(" ~ duration ~ ")" }
+
+// ---------- Signals / Vars ----------
+signal_decl = {
+    "signal" ~ ident ~ "(" ~ ident ~ ":" ~ type_expr ~ ")" ~ "->" ~ type_expr ~ "=" ~ formula
+}
+var_decl = { "var" ~ ident ~ (":" ~ type_expr)? ~ "=" ~ formula }
+
+// ---------- Contracts ----------
+contract_decl = { "contract" ~ ident ~ "on" ~ ident ~ "{" ~ contract_body ~ "}" }
+contract_body = {
+      let_decl*
+    ~ ("assume:"    ~ formula)*
+    ~ ("invariant:" ~ formula)+
+    ~ ("guarantee:" ~ formula)*
+    ~ violation_block
+}
+let_decl = { "let" ~ ident ~ (":" ~ type_expr)? ~ "=" ~ formula }
+
+violation_block = { "violation" ~ "{" ~ violation_field* ~ "}" }
+violation_field = _{ severity_field | guard_field | transition_field | emit_field }
+severity_field   = { "severity:" ~ severity }
+guard_field      = { "guard:" ~ formula }
+transition_field = { "transition:" ~ ident ~ "->" ~ ident }
+emit_field       = { "emit:" ~ string_lit }
+severity         = { "INFO" | "WARNING" | "CRITICAL" }
+
+// ---------- Rule sugar ----------
+rule_decl    = { "rule" ~ ident ~ "on" ~ ident ~ "when" ~ formula ~ "then" ~ action_block }
+action_block = { "{" ~ action_field* ~ "}" }
+action_field = _{ severity_field | guard_field | transition_field | emit_field }
+
+// ---------- Temporal formulas ----------
+formula   = { f_implies }
+f_implies = { f_or ~ ("implies" ~ f_implies)? }        // 右结合
+f_or      = { f_and ~ ("or" ~ f_and)* }
+f_and     = { f_not ~ ("and" ~ f_not)* }
+f_not     = { ("not" ~ f_not) | f_atom }
+
+f_atom = {
+      temporal_op
+    | quantifier_op
+    | predicate
+    | "(" ~ formula ~ ")"
+}
+
+temporal_op = _{
+      always_op
+    | eventually_op
+    | historically_op
+    | once_op
+    | until_op
+    | since_op
+    | within_op
+    | next_op
+}
+
+always_op       = { "always" ~ "(" ~ formula ~ ")" }
+eventually_op   = { "eventually" ~ "(" ~ formula ~ ")" }
+historically_op = { "historically" ~ "(" ~ formula ~ ("," ~ "within:" ~ duration)? ~ ")" }
+once_op         = { "once" ~ "(" ~ formula ~ ("," ~ "within:" ~ duration)? ~ ")" }
+until_op        = { "until" ~ "(" ~ formula ~ "," ~ formula ~ ")" }
+since_op        = { "since" ~ "(" ~ formula ~ "," ~ formula ~ ")" }
+within_op       = { "within" ~ "(" ~ duration ~ "," ~ formula ~ ")" }
+next_op         = { "next" ~ "(" ~ formula ~ ")" }
+
+quantifier_op = _{ exists_op | forall_op }
+exists_op = { "exists" ~ "(" ~ stream_ref ~ ("," ~ "within:" ~ duration)? ~ ")" }
+forall_op = { "forall" ~ "(" ~ stream_ref ~ ("," ~ "within:" ~ duration)? ~ ")" }
+
+predicate = { expr }
+
+// ---------- Scalar expressions ----------
+expr     = { cmp_expr }
+cmp_expr = { add_expr ~ (cmp_op ~ add_expr)? }
+cmp_op   = { ">=" | "<=" | "==" | "!=" | ">" | "<" }
+
+add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
+add_op   = { "+" | "-" }
+
+mul_expr = { primary ~ (mul_op ~ primary)* }
+mul_op   = { "*" | "/" | "%" }
+
+primary = {
+      duration
+    | number
+    | string_lit
+    | bool_lit
+    | call_expr
+    | path_ident
+    | ident
+    | "(" ~ expr ~ ")"
+}
+
+call_expr  = { ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+path_ident = @{ ident ~ ("." ~ ident)+ }
+ident      = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+number     = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+bool_lit   = { "true" | "false" }
+duration   = @{ ASCII_DIGIT+ ~ ("s" | "m" | "h" | "d" | "w" | "y") }

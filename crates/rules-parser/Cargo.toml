@@ -1,0 +1,14 @@
+[package]
+name = "rules-parser"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_parser"
+path = "src/lib.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+pest = { workspace = true }
+pest_derive = { workspace = true }
+thiserror = { workspace = true }
