@@ -1,0 +1,14 @@
+[package]
+name = "rules-runtime"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+rules-dictionary = { path = "../rules-dictionary" }
+rules-dispatcher = { path = "../rules-dispatcher" }
+thiserror = { workspace = true }
