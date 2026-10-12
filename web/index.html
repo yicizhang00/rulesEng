@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>rulesEng · 规则管理</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f5f7fa; color: #1f2937; height: 100vh; overflow: hidden; }
+  .topbar { height: 52px; background: #fff; border-bottom: 1px solid #e5e7eb;
+            display: flex; align-items: center; padding: 0 24px; }
+  .logo { font-weight: 600; font-size: 15px; margin-right: 32px; }
+  .logo span { color: #3b82f6; }
+  nav a { color: #6b7280; text-decoration: none; margin-right: 24px; font-size: 13px;
+          padding: 6px 2px; border-bottom: 2px solid transparent; }
+  nav a.active { color: #3b82f6; border-bottom-color: #3b82f6; }
+  .main { display: grid; grid-template-columns: 240px 200px 1fr 280px; height: calc(100vh - 52px); }
+  .sidebar { background: #fff; border-right: 1px solid #e5e7eb; padding: 12px; overflow: auto; }
+  .palette { background: #fafbfc; border-right: 1px solid #e5e7eb; padding: 12px; overflow: auto; }
+  .editor-area { display: flex; flex-direction: column; overflow: hidden; }
+  .bind-panel { background: #fff; border-left: 1px solid #e5e7eb; padding: 12px; overflow: auto; }
+
+  .section-title { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 8px; }
+  .section-title:first-child { margin-top: 0; }
+
+  .rule-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+               font-size: 13px; display: flex; justify-content: space-between; }
+  .rule-item:hover { background: #f3f4f6; }
+  .rule-item.active { background: #eff6ff; color: #1d4ed8; }
+
+  .palette-item { padding: 8px 10px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px;
+                  margin-bottom: 6px; font-size: 12px; cursor: grab; font-family: Consolas, monospace; }
+  .palette-item:hover { border-color: #3b82f6; background: #eff6ff; }
+  .palette-item:active { cursor: grabbing; }
+
+  .btn { background: #3b82f6; color: #fff; border: none; padding: 6px 12px; border-radius: 6px;
+         cursor: pointer; font-size: 12px; }
+  .btn.ghost { background: #fff; color: #374151; border: 1px solid #d1d5db; }
+  .btn.danger { background: #ef4444; }
+
+  .editor-head { padding: 10px 14px; background: #fff; border-bottom: 1px solid #e5e7eb;
+                 display: flex; justify-content: space-between; align-items: center; }
+  .editor-head h2 { font-size: 14px; }
+  textarea { flex: 1; border: none; padding: 14px; font-family: "JetBrains Mono", Consolas, monospace;
+             font-size: 13px; line-height: 1.6; resize: none; background: #fafbfc; }
+  textarea:focus { outline: none; background: #fff; }
+  .status { padding: 8px 14px; font-size: 12px; border-top: 1px solid #e5e7eb; }
+  .status.ok { background: #f0fdf4; color: #166534; }
+  .status.err { background: #fef2f2; color: #991b1b; font-family: Consolas, monospace; white-space: pre-wrap; }
+  .toolbar { padding: 8px 14px; background: #f9fafb; border-top: 1px solid #e5e7eb; display: flex; gap: 8px; align-items: center; }
+  .toolbar select, .toolbar input { padding: 4px 8px; font-size: 12px; border: 1px solid #d1d5db; border-radius: 4px; }
+
+  .bind-item { padding: 10px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 8px; font-size: 12px; }
+  .bind-item .var { font-family: Consolas, monospace; color: #1d4ed8; font-weight: 500; }
+  .bind-item .to { color: #6b7280; margin-top: 4px; font-size: 11px; }
+  .bind-item select { width: 100%; margin-top: 6px; padding: 4px; font-size: 11px; }
+
+  .empty { text-align: center; padding: 40px 10px; color: #9ca3af; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="logo">rules<span>Eng</span></div>
+  <nav>
+    <a href="index.html" class="active">规则管理</a>
+    <a href="datasource.html">数据源管理</a>
+    <a href="actions.html">告警动作</a>
+  </nav>
+</div>
+
+<div class="main">
+  <!-- 左：规则列表 -->
+  <div class="sidebar">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="section-title" style="margin:0">规则</div>
+      <button class="btn" onclick="newRule()">+ 新建</button>
+    </div>
+    <div id="tree"><div class="empty">加载中...</div></div>
+  </div>
+
+  <!-- 中左：低代码组件面板（可拖拽） -->
+  <div class="palette">
+    <div class="section-title">组件（拖入编辑器）</div>
+    <div class="palette-item" draggable="true" data-snippet="entity Company {
+  key: code
+  states: [NORMAL, SUSPENDED]
+  initial: NORMAL
+}">entity 声明</div>
+    <div class="palette-item" draggable="true" data-snippet="rule NewRule on Company when ">rule 规则</div>
+    <div class="palette-item" draggable="true" data-snippet="cancel_ratio > 0.85">条件: 阈值</div>
+    <div class="palette-item" draggable="true" data-snippet="DaysOverdue(now(), 100000.0) > 5.0">条件: 逾期天数</div>
+    <div class="palette-item" draggable="true" data-snippet="then {
+  severity: WARNING
+  emit: &quot;触发告警&quot;
+}">then 处置块</div>
+    <div class="palette-item" draggable="true" data-snippet="severity: CRITICAL">severity: CRITICAL</div>
+    <div class="palette-item" draggable="true" data-snippet="var annual_report = ">var 动态变量</div>
+  </div>
+
+  <!-- 中：编辑器 -->
+  <div class="editor-area" id="editorPanel" style="display:none">
+    <div class="editor-head">
+      <h2 id="rname">未命名</h2>
+      <div style="display:flex;gap:6px">
+        <button class="btn ghost" onclick="delRule()">删除</button>
+        <button class="btn" onclick="saveRule()">保存</button>
+      </div>
+    </div>
+    <textarea id="ed" spellcheck="false" oninput="onEdit()"></textarea>
+    <div id="st" class="status ok">编辑中...</div>
+    <div class="toolbar">
+      <span style="font-size:11px;color:#6b7280">模式:</span>
+      <select id="mode" onchange="onModeChange()">
+        <option value="LIFECYCLE">全生命周期（CDC）</option>
+        <option value="ONCE">一次性（cron）</option>
+      </select>
+      <input id="cron" placeholder="0 9 * * 1-5" style="display:none">
+    </div>
+  </div>
+  <div class="empty" id="emptyHint" style="grid-column: span 2; align-self:center">← 选择或新建一条规则</div>
+
+  <!-- 右：变量绑定面板 -->
+  <div class="bind-panel">
+    <div class="section-title">变量 → 数据源列绑定</div>
+    <div id="bindList"><div class="empty">选中规则后<br>自动识别 DSL 中的变量</div></div>
+  </div>
+</div>
+
+<script>
+const API = 'http://127.0.0.1:8081';
+let rules = [], datasources = [], bindings = [], curId = null;
+
+async function load() {
+  const [rs, ds, bs] = await Promise.all([
+    fetch(API+'/api/rules').then(r=>r.json()),
+    fetch(API+'/api/datasources').then(r=>r.json()),
+    fetch(API+'/api/bindings').then(r=>r.json()),
+  ]);
+  rules = rs || []; datasources = ds || []; bindings = bs || [];
+  renderTree();
+}
+function renderTree() {
+  document.getElementById('tree').innerHTML = rules.length ? rules.map(r => `
+    <div class="rule-item ${r.id===curId?'active':''}" onclick="sel(${r.id})">
+      <span>${r.name}</span><span style="color:#9ca3af;font-size:11px">v${r.id}</span>
+    </div>`).join('') : '<div class="empty">暂无规则</div>';
+}
+async function sel(id) {
+  curId = id;
+  const r = rules.find(x=>x.id===id);
+  document.getElementById('emptyHint').style.display = 'none';
+  document.getElementById('editorPanel').style.display = 'flex';
+  document.getElementById('rname').textContent = r.name;
+  document.getElementById('ed').value = r.dsl;
+  document.getElementById('mode').value = r.mode || 'LIFECYCLE';
+  document.getElementById('cron').value = r.cron || '';
+  renderTree(); renderBindings(); revalidate();
+}
+async function newRule() {
+  const r = await fetch(API + '/api/rules', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name:'未命名规则', group_name:'默认', dsl:'', mode:'LIFECYCLE', cron:''})});
+  const nr = await r.json();
+  await load(); sel(nr.id);
+}
+async function saveRule() {
+  const r = rules.find(x=>x.id===curId);
+  await fetch(API + '/api/rules/' + curId, {method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name:r.name, group_name:r.group_name, dsl:document.getElementById('ed').value,
+      mode:document.getElementById('mode').value, cron:document.getElementById('cron').value})});
+  await load();
+  document.getElementById('st').textContent = '✓ 已保存';
+  document.getElementById('st').className = 'status ok';
+}
+async function delRule() {
+  await fetch(API + '/api/rules/' + curId, {method:'DELETE'});
+  curId = null;
+  await load();
+  document.getElementById('editorPanel').style.display = 'none';
+  document.getElementById('emptyHint').style.display = 'block';
+}
+async function revalidate() {
+  const dsl = document.getElementById('ed').value;
+  if (!dsl.trim()) { document.getElementById('st').className='status ok'; document.getElementById('st').textContent='空规则'; return; }
+  try {
+    const r = await fetch(API + '/parse', {method:'POST', body:dsl});
+    const j = await r.json();
+    const st = document.getElementById('st');
+    if (j.ok) { st.className='status ok'; st.textContent='✓ 语法校验通过'; }
+    else { st.className='status err'; st.textContent='✗ ' + j.error; }
+  } catch(e) { document.getElementById('st').textContent = '⚠ 后端未启动'; }
+}
+function onEdit() { revalidate(); renderBindings(); }
+function onModeChange() {
+  document.getElementById('cron').style.display = document.getElementById('mode').value === 'ONCE' ? 'inline-block' : 'none';
+}
+
+// 从 DSL 中识别变量（var xxx = ... 或裸标识符）
+function extractVars(dsl) {
+  const vars = new Set();
+  const re = /var\s+(\w+)/g; let m;
+  while ((m = re.exec(dsl)) !== null) vars.add(m[1]);
+  // 也把 when 后面的裸标识符当变量
+  const whenMatch = dsl.match(/when\s+(.+?)\s+then/);
+  if (whenMatch) {
+    const idRe = /\b([a-z][a-z_0-9]*)\b/g;
+    while ((m = idRe.exec(whenMatch[1])) !== null) {
+      if (!['and','or','not','when','then','now','DaysOverdue'].includes(m[1])) vars.add(m[1]);
+    }
+  }
+  return [...vars];
+}
+function renderBindings() {
+  const dsl = document.getElementById('ed').value;
+  const vars = extractVars(dsl);
+  const el = document.getElementById('bindList');
+  if (!vars.length) { el.innerHTML = '<div class="empty">DSL 中未识别到变量</div>'; return; }
+  el.innerHTML = vars.map(v => {
+    const existing = bindings.find(b => b.rule_id === curId && b.var_name === v);
+    return `<div class="bind-item">
+      <div class="var">${v}</div>
+      <select onchange="bind('${v}', this.value)">
+        <option value="">— 选择数据源列 —</option>
+        ${datasources.map(d => `<optgroup label="${d.name} (${d.host})">
+          <option value="${d.id}.table.column" ${existing&&existing.datasource_id==d.id?'selected':''}>${d.schema_name}.table.column</option>
+        </optgroup>`).join('')}
+      </select>
+      ${existing ? `<div class="to">→ ${existing.table_name}.${existing.column_name}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+async function bind(varName, val) {
+  if (!val) return;
+  const [dsId] = val.split('.');
+  await fetch(API + '/api/bindings', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({rule_id:curId, var_name:varName, datasource_id:parseInt(dsId),
+      table_name:'table', column_name:'column'})});
+  await load(); renderBindings();
+}
+
+// 拖拽：把 palette-item 的 snippet 插入编辑器光标处
+document.querySelectorAll('.palette-item').forEach(el => {
+  el.addEventListener('dragstart', e => {
+    e.dataTransfer.setData('text/plain', el.dataset.snippet);
+  });
+});
+const ed = document.getElementById('ed');
+ed.addEventListener('dragover', e => e.preventDefault());
+ed.addEventListener('drop', e => {
+  e.preventDefault();
+  const snippet = e.dataTransfer.getData('text/plain');
+  const s = ed.selectionStart;
+  ed.value = ed.value.slice(0, s) + snippet + ed.value.slice(ed.selectionEnd);
+  ed.focus(); onEdit();
+});
+
+load();
+</script>
+</body>
+</html>
