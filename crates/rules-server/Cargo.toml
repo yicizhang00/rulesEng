@@ -1,0 +1,19 @@
+[package]
+name = "rules-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rules-server"
+path = "src/main.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+rules-parser = { path = "../rules-parser" }
+rules-verifier = { path = "../rules-verifier" }
+rules-dictionary = { path = "../rules-dictionary" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-native-tls", "json"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
