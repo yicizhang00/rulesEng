@@ -1,0 +1,12 @@
+[package]
+name = "rules-ast"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_ast"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
