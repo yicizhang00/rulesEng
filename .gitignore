@@ -1,0 +1,26 @@
+# Rust / Cargo
+target/
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Runtime / logs
+*.log
+srv.err
+srv.out
+
+# Local temp
+build_err*.txt
+verify_test.txt
+v1.txt
+v2.txt
+v3.txt
+demo_out.txt
+final.log
