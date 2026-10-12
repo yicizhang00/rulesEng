@@ -1,0 +1,14 @@
+[package]
+name = "rules-diff"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_diff"
+path = "src/lib.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+rules-parser = { path = "../rules-parser" }
+rules-smt = { path = "../rules-smt" }
+thiserror = { workspace = true }

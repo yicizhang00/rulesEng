@@ -1,0 +1,11 @@
+[package]
+name = "rules-flatvm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_flatvm"
+path = "src/lib.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
