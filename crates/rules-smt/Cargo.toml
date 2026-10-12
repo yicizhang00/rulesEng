@@ -1,0 +1,11 @@
+[package]
+name = "rules-smt"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_smt"
+path = "src/lib.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
