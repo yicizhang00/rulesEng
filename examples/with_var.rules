@@ -1,0 +1,25 @@
+// 演示动态 var 绑定：运行时数据字典注入"年报审计意见"字段。
+// 原 Schema 里没有"年报""审计意见"，通过 var + external binding 接入。
+entity Company {
+    key: code
+    states: [NORMAL, WATCH, TERMINATED]
+    initial: NORMAL
+}
+
+stream AnnualReports = Stream[DisclosureEvent].filter(event.type == "ANNUAL")
+
+// 动态变量：审计意见类型。运行时由 DataDictionary.set_external 注入。
+var audit_opinion_clean = DisclosureEvent.audit_opinion == "UNQUALIFIED"
+
+contract AnnualReportOnTime on Company {
+    let annual_deadline = 200000.0
+    invariant:
+        (now() > annual_deadline) implies historically(exists(AnnualReports), within: 120d)
+
+    violation {
+        severity: WARNING
+        guard: DaysOverdue(annual_deadline) > 10.0
+        transition: NORMAL -> WATCH
+        emit: "Annual report overdue > 10 days. Company moved to watch list."
+    }
+}

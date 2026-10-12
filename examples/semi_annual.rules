@@ -1,0 +1,21 @@
+// 半年报披露逾期停牌规则（对应原型 main.rs 示例）
+entity Company {
+    key: code
+    states: [NORMAL, SUSPENDED, TERMINATED]
+    initial: NORMAL
+}
+
+stream ValidSemiReports = Stream[DisclosureEvent].filter(event.type == "SEMI_ANNUAL")
+
+contract SemiAnnualCompliance on Company {
+    let deadline = 100000.0
+    invariant:
+        (now() > deadline) implies historically(exists(ValidSemiReports), within: 60d)
+
+    violation {
+        severity: CRITICAL
+        guard: DaysOverdue(deadline) > 5.0
+        transition: NORMAL -> SUSPENDED
+        emit: "Overdue semi-annual disclosure > 5 days. Trading suspended."
+    }
+}

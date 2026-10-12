@@ -1,0 +1,16 @@
+[package]
+name = "rules-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rules-cli"
+path = "src/main.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+rules-parser = { path = "../rules-parser" }
+rules-verifier = { path = "../rules-verifier" }
+rules-runtime = { path = "../rules-runtime" }
+rules-dictionary = { path = "../rules-dictionary" }
+rules-dispatcher = { path = "../rules-dispatcher" }

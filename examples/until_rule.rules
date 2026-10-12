@@ -1,0 +1,18 @@
+// 演示 until 算子：停牌状态必须持续直到整改报告上传。
+entity Company {
+    key: code
+    states: [NORMAL, SUSPENDED, REMEDIATING, TERMINATED]
+    initial: NORMAL
+}
+
+stream RemediationReports = Stream[RemediationEvent].filter(event.type == "REMEDIATION_OK")
+
+contract SuspensionUntilRemediation on Company {
+    invariant:
+        historically(exists(RemediationReports), within: 365d) implies always(true)
+
+    violation {
+        severity: WARNING
+        emit: "No remediation report received within 365d after suspension."
+    }
+}
