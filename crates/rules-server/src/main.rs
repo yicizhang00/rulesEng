@@ -8,13 +8,16 @@
 //!   GET    /health
 //!   POST   /parse
 //!   POST   /verify
-//!   GET    /api/rules
+//!   GET    /api/groups                 规则分组树
+//!   POST   /api/groups
+//!   PUT    /api/groups/:id
+//!   DELETE /api/groups/:id
+//!   GET    /api/rules?group_id=xxx     规则列表（可按分组过滤）
 //!   POST   /api/rules
 //!   PUT    /api/rules/:id
 //!   DELETE /api/rules/:id
 //!   GET    /api/datasources
 //!   POST   /api/datasources
-//!   POST   /api/datasources/:id/test
 //!   GET    /api/bindings?rule_id=
 //!   POST   /api/bindings
 //!   GET    /api/actions
@@ -32,11 +35,25 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 #[derive(Clone, Serialize, Deserialize)]
+struct Group {
+    #[serde(default)]
+    id: u64,
+    #[serde(default)]
+    parent_id: Option<u64>,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    sort: i32,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct Rule {
     #[serde(default)]
     id: u64,
     name: String,
-    group_name: String,
+    #[serde(default)]
+    group_id: u64,
     dsl: String,
     #[serde(default)]
     mode: String,
@@ -53,6 +70,8 @@ struct DataSource {
     host: String,
     port: u16,
     username: String,
+    #[serde(default)]
+    password: String,
     schema_name: String,
 }
 
@@ -78,6 +97,7 @@ struct Action {
 
 #[derive(Default)]
 struct MemState {
+    groups: Vec<Group>,
     rules: Vec<Rule>,
     datasources: Vec<DataSource>,
     bindings: Vec<Binding>,
@@ -93,8 +113,13 @@ enum Store {
 impl Store {
     fn next_id(&self) -> u64 {
         match self {
-            Store::Mysql(_) => 0, // DB auto-increment
-            Store::Mem(m) => { let mut s = m.lock().unwrap(); let id = s.next_id; s.next_id += 1; id }
+            Store::Mysql(_) => 0,
+            Store::Mem(m) => {
+                let mut s = m.lock().unwrap();
+                let id = s.next_id;
+                s.next_id += 1;
+                id
+            }
         }
     }
 }
@@ -104,16 +129,23 @@ async fn main() -> anyhow::Result<()> {
     let store = if let Ok(url) = std::env::var("DATABASE_URL") {
         eprintln!("连接 MySQL: {}", url);
         let pool = MySqlPoolOptions::new().max_connections(5).connect(&url).await?;
-        sqlx::query(include_str!("../sql/schema_runtime.sql")).execute(&pool).await.ok();
+        // 用 raw_sql 执行多语句 DDL（CREATE TABLE 等）
+        let _ = sqlx::raw_sql(include_str!("../sql/schema_runtime.sql"))
+            .execute(&pool)
+            .await
+            .inspect_err(|e| eprintln!("DDL 执行警告（可忽略）: {e}"));
         Store::Mysql(pool)
     } else {
         eprintln!("⚠ DATABASE_URL 未设置，使用内存存储（重启丢数据）");
-        Store::Mem(std::sync::Mutex::new(MemState::default()))
+        let mut st = MemState::default();
+        st.groups.push(Group { id: 1, parent_id: None, name: "默认分组".into(), description: "".into(), sort: 0 });
+        st.next_id = 2;
+        Store::Mem(std::sync::Mutex::new(st))
     };
     let store = Arc::new(store);
 
-    let listener = TcpListener::bind("127.0.0.1:8081").await?;
-    eprintln!("rules-server listening on http://127.0.0.1:8081");
+    let listener = TcpListener::bind("0.0.0.0:8081").await?;
+    eprintln!("rules-server listening on http://0.0.0.0:8081");
 
     loop {
         let (mut socket, _) = listener.accept().await?;
@@ -121,7 +153,6 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut buf = Vec::new();
             let mut tmp = [0u8; 8192];
-            // 读 headers
             let header_end = loop {
                 match socket.read(&mut tmp).await {
                     Ok(0) => return,
@@ -129,7 +160,9 @@ async fn main() -> anyhow::Result<()> {
                     Err(_) => return,
                 }
                 if let Ok(s) = std::str::from_utf8(&buf) {
-                    if let Some(pos) = s.find("\r\n\r\n") { break pos + 4; }
+                    if let Some(pos) = s.find("\r\n\r\n") {
+                        break pos + 4;
+                    }
                 }
             };
             let head_str = std::str::from_utf8(&buf[..header_end]).unwrap_or("").to_string();
@@ -161,168 +194,360 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+fn parse_query(path: &str) -> (Vec<&str>, Vec<(String, String)>) {
+    let mut p = path.split('?');
+    let path_part = p.next().unwrap_or(path);
+    let segs: Vec<&str> = path_part.trim_start_matches('/').split('/').collect();
+    let query: Vec<(String, String)> = p
+        .next()
+        .map(|q| {
+            q.split('&')
+                .filter_map(|kv| {
+                    let mut it = kv.splitn(2, '=');
+                    Some((it.next()?.to_string(), it.next().unwrap_or("").to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (segs, query)
+}
+
 async fn route(store: &Store, method: &str, path: &str, body: &str) -> Value {
-    if method == "OPTIONS" { return json!({"ok":true}); }
-    let p: Vec<&str> = path.split('?').next().unwrap_or(path).trim_start_matches('/').split('/').collect();
+    if method == "OPTIONS" {
+        return json!({"ok": true});
+    }
+    let (p, q) = parse_query(path);
     match (method, p.as_slice()) {
-        ("GET", ["health"]) => json!({"status":"ok"}),
+        ("GET", ["health"]) => json!({"status": "ok"}),
         ("POST", ["parse"]) => parse_dsl(body),
         ("POST", ["verify"]) => verify_dsl(body),
 
-        ("GET", ["api","rules"]) => match store {
+        // ---------- 分组 ----------
+        ("GET", ["api", "groups"]) => match store {
             Store::Mysql(pool) => {
-                let rows = sqlx::query("SELECT id, name, group_name, dsl, mode, cron FROM rules")
+                let rows = sqlx::query("SELECT id, parent_id, name, description, sort FROM rule_groups ORDER BY sort, id")
                     .fetch_all(pool).await;
                 match rows {
                     Ok(rs) => json!(rs.into_iter().map(|r| json!({
-                        "id": r.get::<u64,_>("id"), "name": r.get::<String,_>("name"),
-                        "group_name": r.get::<String,_>("group_name"),
-                        "dsl": r.get::<String,_>("dsl"), "mode": r.get::<String,_>("mode"),
-                        "cron": r.get::<Option<String>,_>("cron").unwrap_or_default()
+                        "id": r.get::<u64,_>("id"),
+                        "parent_id": r.get::<Option<u64>,_>("parent_id"),
+                        "name": r.get::<String,_>("name"),
+                        "description": r.get::<String,_>("description"),
+                        "sort": r.get::<i32,_>("sort"),
                     })).collect::<Vec<_>>()),
-                    Err(e) => json!({"error":e.to_string()}),
+                    Err(e) => json!({"error": e.to_string()}),
                 }
             }
-            Store::Mem(m) => json!(m.lock().unwrap().rules),
+            Store::Mem(m) => json!(m.lock().unwrap().groups),
         },
-        ("POST", ["api","rules"]) => {
-            let r: Rule = match serde_json::from_str(body) { Ok(r)=>r, Err(e)=>return json!({"error":e.to_string()}) };
+        ("POST", ["api", "groups"]) => {
+            let g: Group = match serde_json::from_str(body) {
+                Ok(g) => g,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
             match store {
                 Store::Mysql(pool) => {
-                    let res = sqlx::query("INSERT INTO rules (name, group_name, dsl, mode, cron) VALUES (?, ?, ?, ?, ?)")
-                        .bind(&r.name).bind(&r.group_name).bind(&r.dsl).bind(&r.mode).bind(&r.cron)
+                    let res = sqlx::query("INSERT INTO rule_groups (parent_id, name, description, sort) VALUES (?, ?, ?, ?)")
+                        .bind(g.parent_id).bind(&g.name).bind(&g.description).bind(g.sort)
                         .execute(pool).await;
                     match res {
-                        Ok(res) => json!({"id": res.last_insert_id(), "name":r.name}),
-                        Err(e) => json!({"error":e.to_string()}),
+                        Ok(r) => json!({"id": r.last_insert_id(), "name": g.name}),
+                        Err(e) => json!({"error": e.to_string()}),
                     }
                 }
                 Store::Mem(m) => {
                     let mut s = m.lock().unwrap();
-                    let mut r = r; r.id = s.next_id; s.next_id += 1;
-                    s.rules.push(r.clone()); json!(r)
+                    let mut g = g;
+                    g.id = s.next_id;
+                    s.next_id += 1;
+                    s.groups.push(g.clone());
+                    json!(g)
                 }
             }
         }
-        ("PUT", ["api","rules", id]) => {
+        ("PUT", ["api", "groups", id]) => {
             let id: u64 = id.parse().unwrap_or(0);
-            let r: Rule = match serde_json::from_str(body) { Ok(r)=>r, Err(e)=>return json!({"error":e.to_string()}) };
+            let g: Group = match serde_json::from_str(body) {
+                Ok(g) => g,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
             match store {
                 Store::Mysql(pool) => {
-                    sqlx::query("UPDATE rules SET name=?, group_name=?, dsl=?, mode=?, cron=? WHERE id=?")
-                        .bind(&r.name).bind(&r.group_name).bind(&r.dsl).bind(&r.mode).bind(&r.cron).bind(id)
-                        .execute(pool).await.map(|_| json!({"ok":true})).unwrap_or_else(|e| json!({"error":e.to_string()}))
+                    sqlx::query("UPDATE rule_groups SET name=?, description=?, sort=? WHERE id=?")
+                        .bind(&g.name).bind(&g.description).bind(g.sort).bind(id)
+                        .execute(pool).await
+                        .map(|_| json!({"ok": true}))
+                        .unwrap_or_else(|e| json!({"error": e.to_string()}))
+                }
+                Store::Mem(m) => {
+                    let mut s = m.lock().unwrap();
+                    if let Some(x) = s.groups.iter_mut().find(|x| x.id == id) {
+                        x.name = g.name;
+                        x.description = g.description;
+                        x.sort = g.sort;
+                    }
+                    json!({"ok": true})
+                }
+            }
+        }
+        ("DELETE", ["api", "groups", id]) => {
+            let id: u64 = id.parse().unwrap_or(0);
+            if id == 1 {
+                return json!({"error": "默认分组不能删除"});
+            }
+            match store {
+                Store::Mysql(pool) => {
+                    sqlx::query("DELETE FROM rule_groups WHERE id=?")
+                        .bind(id).execute(pool).await
+                        .map(|_| json!({"ok": true}))
+                        .unwrap_or_else(|e| json!({"error": e.to_string()}))
+                }
+                Store::Mem(m) => {
+                    m.lock().unwrap().groups.retain(|x| x.id != id);
+                    json!({"ok": true})
+                }
+            }
+        }
+
+        // ---------- 规则 ----------
+        ("GET", ["api", "rules"]) => {
+            let group_filter = q.iter().find(|(k, _)| k == "group_id").and_then(|(_, v)| v.parse::<u64>().ok());
+            match store {
+                Store::Mysql(pool) => {
+                    let rows = match group_filter {
+                        Some(gid) => {
+                            sqlx::query("SELECT id, name, group_id, dsl, mode, cron FROM rules WHERE group_id=? ORDER BY id DESC")
+                                .bind(gid).fetch_all(pool).await
+                        }
+                        None => {
+                            sqlx::query("SELECT id, name, group_id, dsl, mode, cron FROM rules ORDER BY id DESC")
+                                .fetch_all(pool).await
+                        }
+                    };
+                    match rows {
+                        Ok(rs) => json!(rs.into_iter().map(|r| json!({
+                            "id": r.get::<u64,_>("id"),
+                            "name": r.get::<String,_>("name"),
+                            "group_id": r.get::<u64,_>("group_id"),
+                            "dsl": r.get::<String,_>("dsl"),
+                            "mode": r.get::<String,_>("mode"),
+                            "cron": r.get::<Option<String>,_>("cron").unwrap_or_default()
+                        })).collect::<Vec<_>>()),
+                        Err(e) => json!({"error": e.to_string()}),
+                    }
+                }
+                Store::Mem(m) => {
+                    let rs = m.lock().unwrap();
+                    let filtered: Vec<Rule> = match group_filter {
+                        Some(gid) => rs.rules.iter().filter(|r| r.group_id == gid).cloned().collect(),
+                        None => rs.rules.clone(),
+                    };
+                    json!(filtered)
+                }
+            }
+        }
+        ("POST", ["api", "rules"]) => {
+            let r: Rule = match serde_json::from_str(body) {
+                Ok(r) => r,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
+            match store {
+                Store::Mysql(pool) => {
+                    let gid = if r.group_id == 0 { 1 } else { r.group_id };
+                    let res = sqlx::query("INSERT INTO rules (name, group_id, dsl, mode, cron) VALUES (?, ?, ?, ?, ?)")
+                        .bind(&r.name).bind(gid).bind(&r.dsl).bind(&r.mode).bind(&r.cron)
+                        .execute(pool).await;
+                    match res {
+                        Ok(res) => json!({"id": res.last_insert_id(), "name": r.name, "group_id": gid}),
+                        Err(e) => json!({"error": e.to_string()}),
+                    }
+                }
+                Store::Mem(m) => {
+                    let mut s = m.lock().unwrap();
+                    let mut r = r;
+                    if r.group_id == 0 {
+                        r.group_id = 1;
+                    }
+                    r.id = s.next_id;
+                    s.next_id += 1;
+                    s.rules.push(r.clone());
+                    json!(r)
+                }
+            }
+        }
+        ("PUT", ["api", "rules", id]) => {
+            let id: u64 = id.parse().unwrap_or(0);
+            let r: Rule = match serde_json::from_str(body) {
+                Ok(r) => r,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
+            match store {
+                Store::Mysql(pool) => {
+                    sqlx::query("UPDATE rules SET name=?, group_id=?, dsl=?, mode=?, cron=? WHERE id=?")
+                        .bind(&r.name).bind(r.group_id).bind(&r.dsl).bind(&r.mode).bind(&r.cron).bind(id)
+                        .execute(pool).await
+                        .map(|_| json!({"ok": true}))
+                        .unwrap_or_else(|e| json!({"error": e.to_string()}))
                 }
                 Store::Mem(m) => {
                     let mut s = m.lock().unwrap();
                     if let Some(x) = s.rules.iter_mut().find(|x| x.id == id) {
-                        x.name = r.name; x.group_name = r.group_name; x.dsl = r.dsl; x.mode = r.mode; x.cron = r.cron;
+                        x.name = r.name;
+                        x.group_id = r.group_id;
+                        x.dsl = r.dsl;
+                        x.mode = r.mode;
+                        x.cron = r.cron;
                     }
-                    json!({"ok":true})
+                    json!({"ok": true})
                 }
             }
         }
-        ("DELETE", ["api","rules", id]) => {
+        ("DELETE", ["api", "rules", id]) => {
             let id: u64 = id.parse().unwrap_or(0);
             match store {
                 Store::Mysql(pool) => {
                     sqlx::query("DELETE FROM rules WHERE id=?").bind(id).execute(pool).await
-                        .map(|_| json!({"ok":true})).unwrap_or_else(|e| json!({"error":e.to_string()}))
+                        .map(|_| json!({"ok": true}))
+                        .unwrap_or_else(|e| json!({"error": e.to_string()}))
                 }
-                Store::Mem(m) => { m.lock().unwrap().rules.retain(|x| x.id != id); json!({"ok":true}) }
+                Store::Mem(m) => {
+                    m.lock().unwrap().rules.retain(|x| x.id != id);
+                    json!({"ok": true})
+                }
             }
         }
 
-        ("GET", ["api","datasources"]) => match store {
+        // ---------- 数据源 ----------
+        ("GET", ["api", "datasources"]) => match store {
             Store::Mysql(pool) => {
                 let rows = sqlx::query("SELECT id, name, db_type, host, port, username, schema_name FROM datasources")
                     .fetch_all(pool).await;
                 match rows {
                     Ok(rs) => json!(rs.into_iter().map(|r| json!({
-                        "id":r.get::<u64,_>("id"),"name":r.get::<String,_>("name"),
-                        "db_type":r.get::<String,_>("db_type"),"host":r.get::<String,_>("host"),
-                        "port":r.get::<u16,_>("port"),"username":r.get::<String,_>("username"),
-                        "schema_name":r.get::<String,_>("schema_name")
+                        "id": r.get::<u64,_>("id"), "name": r.get::<String,_>("name"),
+                        "db_type": r.get::<String,_>("db_type"), "host": r.get::<String,_>("host"),
+                        "port": r.get::<u16,_>("port"), "username": r.get::<String,_>("username"),
+                        "schema_name": r.get::<String,_>("schema_name")
                     })).collect::<Vec<_>>()),
-                    Err(e) => json!({"error":e.to_string()}),
+                    Err(e) => json!({"error": e.to_string()}),
                 }
             }
             Store::Mem(m) => json!(m.lock().unwrap().datasources),
         }
-        ("POST", ["api","datasources"]) => {
-            let ds: DataSource = match serde_json::from_str(body) { Ok(d)=>d, Err(e)=>return json!({"error":e.to_string()}) };
+        ("POST", ["api", "datasources"]) => {
+            let ds: DataSource = match serde_json::from_str(body) {
+                Ok(d) => d,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
             match store {
                 Store::Mysql(pool) => {
-                    let res = sqlx::query("INSERT INTO datasources (name, db_type, host, port, username, schema_name) VALUES (?,?,?,?,?,?)")
-                        .bind(&ds.name).bind(&ds.db_type).bind(&ds.host).bind(ds.port).bind(&ds.username).bind(&ds.schema_name)
+                    let res = sqlx::query("INSERT INTO datasources (name, db_type, host, port, username, password_enc, schema_name) VALUES (?,?,?,?,?,?,?)")
+                        .bind(&ds.name).bind(&ds.db_type).bind(&ds.host).bind(ds.port).bind(&ds.username).bind(&ds.password).bind(&ds.schema_name)
                         .execute(pool).await;
-                    match res { Ok(r)=>json!({"id":r.last_insert_id()}), Err(e)=>json!({"error":e.to_string()}) }
+                    match res {
+                        Ok(r) => json!({"id": r.last_insert_id()}),
+                        Err(e) => json!({"error": e.to_string()}),
+                    }
                 }
-                Store::Mem(m) => { let mut s = m.lock().unwrap(); let mut ds = ds; ds.id = s.next_id; s.next_id += 1; s.datasources.push(ds.clone()); json!(ds) }
+                Store::Mem(m) => {
+                    let mut s = m.lock().unwrap();
+                    let mut ds = ds;
+                    ds.id = s.next_id;
+                    s.next_id += 1;
+                    s.datasources.push(ds.clone());
+                    json!(ds)
+                }
             }
         }
-        ("POST", ["api","datasources", _id, "test"]) => {
-            // 原型：真连由 sqlx 在上面建池时已验证
-            json!({"ok":true, "message":"连接成功"})
+        ("POST", ["api", "datasources", _id, "test"]) => {
+            json!({"ok": true, "message": "连接成功"})
         }
 
-        ("GET", ["api","bindings"]) => match store {
+        // ---------- 绑定 ----------
+        ("GET", ["api", "bindings"]) => match store {
             Store::Mysql(pool) => {
                 let rows = sqlx::query("SELECT id, rule_id, var_name, datasource_id, table_name, column_name FROM rule_bindings")
                     .fetch_all(pool).await;
                 match rows {
                     Ok(rs) => json!(rs.into_iter().map(|r| json!({
-                        "id":r.get::<u64,_>("id"),"rule_id":r.get::<u64,_>("rule_id"),
-                        "var_name":r.get::<String,_>("var_name"),
-                        "datasource_id":r.get::<u64,_>("datasource_id"),
-                        "table_name":r.get::<String,_>("table_name"),
-                        "column_name":r.get::<String,_>("column_name")
+                        "id": r.get::<u64,_>("id"), "rule_id": r.get::<u64,_>("rule_id"),
+                        "var_name": r.get::<String,_>("var_name"),
+                        "datasource_id": r.get::<u64,_>("datasource_id"),
+                        "table_name": r.get::<String,_>("table_name"),
+                        "column_name": r.get::<String,_>("column_name")
                     })).collect::<Vec<_>>()),
-                    Err(e) => json!({"error":e.to_string()}),
+                    Err(e) => json!({"error": e.to_string()}),
                 }
             }
             Store::Mem(m) => json!(m.lock().unwrap().bindings),
         }
-        ("POST", ["api","bindings"]) => {
-            let b: Binding = match serde_json::from_str(body) { Ok(b)=>b, Err(e)=>return json!({"error":e.to_string()}) };
+        ("POST", ["api", "bindings"]) => {
+            let b: Binding = match serde_json::from_str(body) {
+                Ok(b) => b,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
             match store {
                 Store::Mysql(pool) => {
                     let res = sqlx::query("INSERT INTO rule_bindings (rule_id, var_name, datasource_id, table_name, column_name) VALUES (?,?,?,?,?)")
                         .bind(b.rule_id).bind(&b.var_name).bind(b.datasource_id).bind(&b.table_name).bind(&b.column_name)
                         .execute(pool).await;
-                    match res { Ok(r)=>json!({"id":r.last_insert_id()}), Err(e)=>json!({"error":e.to_string()}) }
+                    match res {
+                        Ok(r) => json!({"id": r.last_insert_id()}),
+                        Err(e) => json!({"error": e.to_string()}),
+                    }
                 }
-                Store::Mem(m) => { let mut s = m.lock().unwrap(); let mut b = b; b.id = s.next_id; s.next_id += 1; s.bindings.push(b.clone()); json!(b) }
+                Store::Mem(m) => {
+                    let mut s = m.lock().unwrap();
+                    let mut b = b;
+                    b.id = s.next_id;
+                    s.next_id += 1;
+                    s.bindings.push(b.clone());
+                    json!(b)
+                }
             }
         }
 
-        ("GET", ["api","actions"]) => match store {
+        // ---------- 动作 ----------
+        ("GET", ["api", "actions"]) => match store {
             Store::Mysql(pool) => {
                 let rows = sqlx::query("SELECT id, rule_id, action_type, config FROM rule_actions").fetch_all(pool).await;
                 match rows {
                     Ok(rs) => json!(rs.into_iter().map(|r| json!({
-                        "id":r.get::<u64,_>("id"),"rule_id":r.get::<u64,_>("rule_id"),
-                        "action_type":r.get::<String,_>("action_type"),
-                        "config":r.get::<String,_>("config")
+                        "id": r.get::<u64,_>("id"), "rule_id": r.get::<u64,_>("rule_id"),
+                        "action_type": r.get::<String,_>("action_type"),
+                        "config": r.get::<String,_>("config")
                     })).collect::<Vec<_>>()),
-                    Err(e) => json!({"error":e.to_string()}),
+                    Err(e) => json!({"error": e.to_string()}),
                 }
             }
             Store::Mem(m) => json!(m.lock().unwrap().actions),
         }
-        ("POST", ["api","actions"]) => {
-            let a: Action = match serde_json::from_str(body) { Ok(a)=>a, Err(e)=>return json!({"error":e.to_string()}) };
+        ("POST", ["api", "actions"]) => {
+            let a: Action = match serde_json::from_str(body) {
+                Ok(a) => a,
+                Err(e) => return json!({"error": e.to_string()}),
+            };
             match store {
                 Store::Mysql(pool) => {
                     let res = sqlx::query("INSERT INTO rule_actions (rule_id, action_type, config) VALUES (?,?,?)")
                         .bind(a.rule_id).bind(&a.action_type).bind(&a.config).execute(pool).await;
-                    match res { Ok(r)=>json!({"id":r.last_insert_id()}), Err(e)=>json!({"error":e.to_string()}) }
+                    match res {
+                        Ok(r) => json!({"id": r.last_insert_id()}),
+                        Err(e) => json!({"error": e.to_string()}),
+                    }
                 }
-                Store::Mem(m) => { let mut s = m.lock().unwrap(); let mut a = a; a.id = s.next_id; s.next_id += 1; s.actions.push(a.clone()); json!(a) }
+                Store::Mem(m) => {
+                    let mut s = m.lock().unwrap();
+                    let mut a = a;
+                    a.id = s.next_id;
+                    s.next_id += 1;
+                    s.actions.push(a.clone());
+                    json!(a)
+                }
             }
         }
 
-        _ => json!({"error":format!("not found: {} {}", method, path)}),
+        _ => json!({"error": format!("not found: {} {}", method, path)}),
     }
 }
 
@@ -336,11 +561,11 @@ fn parse_dsl(dsl: &str) -> Value {
 fn verify_dsl(dsl: &str) -> Value {
     let spec = match parse(dsl) {
         Ok(s) => s,
-        Err(e) => return json!({"ok":false, "errors":[e.to_string()]}),
+        Err(e) => return json!({"ok": false, "errors": [e.to_string()]}),
     };
     let dict = DataDictionary::default();
     match Verifier::verify(&spec, &dict) {
-        Ok(_) => json!({"ok":true, "errors":[]}),
-        Err(errs) => json!({"ok":false, "errors": errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()}),
+        Ok(_) => json!({"ok": true, "errors": []}),
+        Err(errs) => json!({"ok": false, "errors": errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()}),
     }
 }

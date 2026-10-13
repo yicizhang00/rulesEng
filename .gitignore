@@ -24,3 +24,19 @@ v2.txt
 v3.txt
 demo_out.txt
 final.log
+
+# Node / Vite
+node_modules/
+web/dist/
+web/dev.*
+web/dev.log
+
+# Env
+.env
+
+# Legacy backup
+web_legacy/
+
+# Start scripts logs
+*.err
+*.out
