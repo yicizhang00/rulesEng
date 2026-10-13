@@ -1,0 +1,39 @@
+// ============================================================================
+//  §5 用例 3 —— 电商大促领券金额与阶段防刷（模式 D：DMN 决策表）
+//  对应验收标准 AC4：
+//    11-02 提交 20 元领券 → 查出合法额度 10 元 → 拦截；
+//    同阶段二次刷券 → 被状态格（phase_mask 已置位）拦截。
+//  决策表规则行会被平铺为一阶谓词，交 SMT 证明互斥 / 完备（UNIQUE 命中策略）。
+// ============================================================================
+
+contract EcommerceCouponPolicy on Entity[User] decision_table {
+    key: user_id
+
+    // 每个促销期一个位：已领取过的阶段不可重复领取
+    states: [
+        PHASE_1 = 0x01,
+        PHASE_2 = 0x02,
+        PHASE_3 = 0x04
+    ]
+
+    // ---- DMN 1.3 决策表：输入日期区间 → (合法额度, 阶段掩码) ----
+    decision_table DetermineAmount(req_time: Timestamp) -> (amount: Int, phase: Int) {
+        hit_policy: UNIQUE
+        rules: [
+            in [11-01 .. 11-03] => (10, PHASE_1),
+            in [11-04 .. 11-05] => (20, PHASE_2),
+            in [11-06 .. 11-06] => (5,  PHASE_3),
+            default             => (0,  0x00)
+        ]
+    }
+
+    // 不变量：申请额度必须等于查表结果，且该阶段未被领取过
+    invariant PreventFraud on Event[IssueCouponIntent] {
+        let (legal_amount, phase_mask) = DetermineAmount(event.timestamp)
+        when: event.requested_amount != legal_amount
+              or (state & phase_mask) != 0
+        verdict: DENY(
+            code: "ERR_COUPON_AMOUNT_FRAUD",
+            reason: "申请额度与促销期规则不符，或该阶段券已被领取")
+    }
+}

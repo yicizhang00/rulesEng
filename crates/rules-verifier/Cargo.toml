@@ -10,4 +10,8 @@ path = "src/lib.rs"
 [dependencies]
 rules-ast = { path = "../rules-ast" }
 rules-dictionary = { path = "../rules-dictionary" }
+rules-smt = { path = "../rules-smt" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+rules-parser = { path = "../rules-parser" }

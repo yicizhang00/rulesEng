@@ -1,0 +1,17 @@
+[package]
+name = "rules-pep"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_pep"
+path = "src/lib.rs"
+# 同时产出 rlib（供 Rust 侧集成）与 cdylib（供 C-ABI / WASM 网关内联加载）。
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+rules-parser = { path = "../rules-parser" }
+rules-dictionary = { path = "../rules-dictionary" }
+rules-runtime = { path = "../rules-runtime" }
+thiserror = { workspace = true }

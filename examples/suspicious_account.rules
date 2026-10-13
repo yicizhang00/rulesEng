@@ -1,0 +1,29 @@
+// ============================================================================
+//  §5 用例 4 —— 高频账户识别与在途大额报单拦截（模式 B：受限工作内存）
+//  对应验收标准 AC5：
+//    多事实推导（Account + InFlightOrder）→ 派生 SuspiciousTag；
+//    循环依赖在编译期被 DAG 检验静态驳回；
+//    推导步数超过 32 步立即熔断（MAX_ACTIVATION_STEPS）。
+//  与 Drools 的三点差异（PRD §4.2）：
+//    1. 不暴露 `modify`/`update`，只有 insert / retract / yield；
+//    2. 事实插入去重（同型同内容不重复入内存）保证必然终止；
+//    3. 每会话步长硬上限 32，超限截断而非无限激活。
+// ============================================================================
+
+rule "Derive_Suspicious_Account" stateful {
+    when:
+        $acc: Account(trade_frequency_5s > 10)
+        not exists SuspiciousTag(account_id == $acc.id)
+    then:
+        insert(SuspiciousTag { account_id: $acc.id, reason: "HighFrequency" });
+}
+
+rule "Action_On_Suspicious" stateful {
+    when:
+        $tag: SuspiciousTag(reason == "HighFrequency")
+        $order: InFlightOrder(account_id == $tag.account_id, amount > 500000)
+    then:
+        yield DENY(
+            code: "ERR_SUSPICIOUS_INFLIGHT_ORDER",
+            reason: "高频账户存在 50 万以上在途报单，阻断交易")
+}

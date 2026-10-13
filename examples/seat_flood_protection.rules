@@ -1,0 +1,39 @@
+// ============================================================================
+//  §5 用例 1 —— IPO 打新席位洪水防护（模式 C：流式 + 惩罚租约）
+//  对应验收标准 AC2：
+//    1.0 ~ 1.5 秒内 21 笔报单 → 第 21 笔被同线程物理阻断；
+//    冻结租约 60s 生效；60s 后自动放行（无后台定时器）。
+// ============================================================================
+
+contract SeatFloodProtection on Entity[Seat] stream {
+    key: seat_id
+
+    // 惩罚租约账本：被 LeaseUpdate 单调推进（只增不减）
+    state var frozen_until: Timestamp = 0
+
+    // ---- PEP 前置快筛：已冻结则直接拒绝（不占用窗口配额）----
+    guard IsNotFrozen on Event[OrderIntent, CancelIntent] {
+        when: now() < frozen_until
+        verdict: DENY(
+            code: "ERR_SEAT_FROZEN",
+            reason: "席位处于惩罚租约冻结期内，拒绝一切报单/撤单"
+        )
+    }
+
+    // ---- 5 秒滑动窗口上的双路计数 ----
+    stream SeatActions := Stream[OrderIntent, CancelIntent]
+        .filter(e => e.seat_id == seat_id)
+        .window(sliding(5s))
+
+    metric window_order_count = sum(SeatActions[OrderIntent].count)
+    metric window_cancel_count = sum(SeatActions[CancelIntent].count)
+
+    // ---- 不变量：超频即拒绝，并施加 60s 惩罚租约 ----
+    invariant MaxFrequencyLimit on Event[OrderIntent, CancelIntent] {
+        when: window_order_count > 20 or window_cancel_count > 10
+        verdict: DENY(
+            code: "ERR_SEAT_FLOOD",
+            reason: "5 秒滑动窗口内报单 > 20 笔或撤单 > 10 笔")
+            , LeaseUpdate(frozen_until = now() + 60s)
+    }
+}

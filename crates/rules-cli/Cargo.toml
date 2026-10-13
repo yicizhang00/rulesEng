@@ -14,3 +14,4 @@ rules-verifier = { path = "../rules-verifier" }
 rules-runtime = { path = "../rules-runtime" }
 rules-dictionary = { path = "../rules-dictionary" }
 rules-dispatcher = { path = "../rules-dispatcher" }
+rules-dmn = { path = "../rules-dmn" }

@@ -3,8 +3,7 @@
 //! 运行：cargo test -p rules-flatvm --release --test bench -- --nocapture
 
 use rules_ast::{BinaryOp, Expr};
-use rules_flatvm::{compile, FlatVm};
-use std::collections::HashMap;
+use rules_flatvm::{compile, Env, FlatVm, Interner, MapBinder, Operand};
 use std::time::Instant;
 
 /// 递归 AST 求值（对照基线）。
@@ -37,7 +36,7 @@ fn eval_rec(e: &Expr, x: f64, y: f64) -> f64 {
 }
 
 fn build_expr() -> Expr {
-    // ((x + y) * (x - y)) > 100
+    // ((x + y) * (x + y)) > 100
     Expr::bin(
         BinaryOp::Gt,
         Expr::bin(
@@ -49,13 +48,19 @@ fn build_expr() -> Expr {
     )
 }
 
+struct NullEnv;
+impl Env for NullEnv {
+    fn call(&mut self, _func: &str, _args: &[Operand]) -> Operand {
+        Operand::ZERO_INIT
+    }
+}
+
 #[test]
 fn bench_throughput() {
     let expr = build_expr();
-    let mut offs = HashMap::new();
-    offs.insert("x".to_string(), 0);
-    offs.insert("y".to_string(), 1);
-    let prog = compile(&expr, &offs);
+    let mut binder = MapBinder::default();
+    let mut interner = Interner::new();
+    let prog = compile(&expr, &mut binder, &mut interner);
 
     const N: u32 = 1_000_000;
 
@@ -68,18 +73,22 @@ fn bench_throughput() {
     let t_rec = t0.elapsed();
 
     // FlatVM
-    let mut vm = FlatVm::new(prog.num_slots);
+    let mut vm = FlatVm::new(prog.num_slots, prog.text_slots);
+    let mut env = NullEnv;
     let t0 = Instant::now();
     for i in 0..N {
         vm.set(0, i as f64 % 100.0);
         vm.set(1, (i * 7) as f64 % 100.0);
-        sink += vm.run(&prog);
+        sink += vm.run(&prog, &mut env).num;
     }
     let t_flat = t0.elapsed();
 
     println!("\n=== FlatVM 性能基准 ({} iterations) ===", N);
     println!("  recursive AST : {:?}  ({:.0} ns/iter)", t_rec, t_rec.as_nanos() as f64 / N as f64);
     println!("  flat VM       : {:?}  ({:.0} ns/iter)", t_flat, t_flat.as_nanos() as f64 / N as f64);
-    println!("  speedup       : {:.2}x", t_rec.as_nanos() as f64 / t_flat.as_nanos().max(1) as f64);
+    println!(
+        "  speedup       : {:.2}x",
+        t_rec.as_nanos() as f64 / t_flat.as_nanos().max(1) as f64
+    );
     println!("  sink (防优化) : {}", sink);
 }

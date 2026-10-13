@@ -26,7 +26,7 @@ pub enum DiffVerdict {
 
 #[derive(Debug, Clone)]
 pub struct ContractDiff {
-    pub contract: String,
+    pub spec: String,
     pub verdict: DiffVerdict,
     pub details: Vec<String>,
 }
@@ -34,20 +34,20 @@ pub struct ContractDiff {
 /// 对整份 spec 的两个版本做逐 contract 对比。
 pub fn diff_specs(old: &SpecFile, new: &SpecFile) -> Vec<ContractDiff> {
     let mut out = Vec::new();
-    for nc in &new.contracts {
-        match old.contracts.iter().find(|c| c.name == nc.name) {
+    for nc in &new.specs {
+        match old.specs.iter().find(|c| c.name == nc.name) {
             Some(oc) => out.push(diff_contract(oc, nc)),
             None => out.push(ContractDiff {
-                contract: nc.name.clone(),
+                spec: nc.name.clone(),
                 verdict: DiffVerdict::Incomparable,
-                details: vec!["new contract, no old version to compare".into()],
+                details: vec!["new spec, no old version to compare".into()],
             }),
         }
     }
     out
 }
 
-pub fn diff_contract(old: &ContractDecl, new: &ContractDecl) -> ContractDiff {
+pub fn diff_contract(old: &SpecDecl, new: &SpecDecl) -> ContractDiff {
     let mut details = Vec::new();
 
     // 1. 比较 guard 阈值（符号级判定，不仅看数字）
@@ -100,7 +100,7 @@ pub fn diff_contract(old: &ContractDecl, new: &ContractDecl) -> ContractDiff {
     };
 
     ContractDiff {
-        contract: old.name.clone(),
+        spec: old.name.clone(),
         verdict,
         details,
     }
@@ -132,7 +132,7 @@ mod tests {
     fn detects_tightening_when_threshold_increases() {
         let old = parse(&src("DaysOverdue(d) > 5.0")).unwrap();
         let new = parse(&src("DaysOverdue(d) > 10.0")).unwrap();
-        let d = diff_contract(&old.contracts[0], &new.contracts[0]);
+        let d = diff_contract(&old.specs[0], &new.specs[0]);
         assert_eq!(d.verdict, DiffVerdict::Tightened);
     }
 
@@ -140,7 +140,7 @@ mod tests {
     fn detects_loosening_regression_hole() {
         let old = parse(&src("DaysOverdue(d) > 10.0")).unwrap();
         let new = parse(&src("DaysOverdue(d) > 3.0")).unwrap();
-        let d = diff_contract(&old.contracts[0], &new.contracts[0]);
+        let d = diff_contract(&old.specs[0], &new.specs[0]);
         assert_eq!(d.verdict, DiffVerdict::Loosened);
     }
 
@@ -148,7 +148,7 @@ mod tests {
     fn detects_equivalent() {
         let old = parse(&src("DaysOverdue(d) > 5.0")).unwrap();
         let new = parse(&src("DaysOverdue(d) > 5.0")).unwrap();
-        let d = diff_contract(&old.contracts[0], &new.contracts[0]);
+        let d = diff_contract(&old.specs[0], &new.specs[0]);
         assert_eq!(d.verdict, DiffVerdict::Equivalent);
     }
 
@@ -156,8 +156,8 @@ mod tests {
     fn action_only_change() {
         let old = parse(&src("DaysOverdue(d) > 5.0")).unwrap();
         let mut new = parse(&src("DaysOverdue(d) > 5.0")).unwrap();
-        new.contracts[0].violation.severity = Severity::Warning;
-        let d = diff_contract(&old.contracts[0], &new.contracts[0]);
+        new.specs[0].violation.severity = Severity::Warning;
+        let d = diff_contract(&old.specs[0], &new.specs[0]);
         assert_eq!(d.verdict, DiffVerdict::ChangedActionOnly);
     }
 }

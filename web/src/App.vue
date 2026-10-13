@@ -4,12 +4,14 @@
       <div class="logo">rules<span>Eng</span></div>
       <el-menu mode="horizontal" :default-active="route" style="border-bottom:none; flex:1" @select="onNav">
         <el-menu-item index="/">规则管理</el-menu-item>
+        <el-menu-item index="/verify">校验报告</el-menu-item>
         <el-menu-item index="/datasources">数据源管理</el-menu-item>
         <el-menu-item index="/actions">告警动作</el-menu-item>
       </el-menu>
     </el-header>
-    <el-main style="padding:0;background:#f5f7fa">
+    <el-main style="padding:0;background:#f5f7fa;min-height:0;overflow:hidden">
       <RulesView v-if="route === '/'" />
+      <VerifyReportView v-else-if="route === '/verify'" />
       <DatasourcesView v-else-if="route === '/datasources'" />
       <ActionsView v-else-if="route === '/actions'" />
     </el-main>
@@ -19,6 +21,7 @@
 <script setup>
 import { ref } from 'vue'
 import RulesView from './views/RulesView.vue'
+import VerifyReportView from './views/VerifyReportView.vue'
 import DatasourcesView from './views/DatasourcesView.vue'
 import ActionsView from './views/ActionsView.vue'
 

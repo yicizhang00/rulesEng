@@ -6,6 +6,7 @@ members = [
     "crates/rules-dictionary",
     "crates/rules-verifier",
     "crates/rules-runtime",
+    "crates/rules-temporal",
     "crates/rules-dispatcher",
     "crates/rules-cli",
     "crates/rules-diff",
@@ -13,6 +14,8 @@ members = [
     "crates/rules-backtest",
     "crates/rules-flatvm",
     "crates/rules-smt",
+    "crates/rules-dmn",
+    "crates/rules-pep",
     "crates/rules-server",
 ]
 

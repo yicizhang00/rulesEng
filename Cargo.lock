@@ -1106,6 +1106,7 @@ dependencies = [
  "rules-ast",
  "rules-dictionary",
  "rules-dispatcher",
+ "rules-dmn",
  "rules-parser",
  "rules-runtime",
  "rules-verifier",
@@ -1140,6 +1141,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rules-dmn"
+version = "0.2.0"
+dependencies = [
+ "rules-ast",
+ "rules-parser",
+ "thiserror",
+]
+
+[[package]]
 name = "rules-flatvm"
 version = "0.2.0"
 dependencies = [
@@ -1153,6 +1163,17 @@ dependencies = [
  "pest",
  "pest_derive",
  "rules-ast",
+ "thiserror",
+]
+
+[[package]]
+name = "rules-pep"
+version = "0.2.0"
+dependencies = [
+ "rules-ast",
+ "rules-dictionary",
+ "rules-parser",
+ "rules-runtime",
  "thiserror",
 ]
 
@@ -1172,6 +1193,9 @@ dependencies = [
  "rules-ast",
  "rules-dictionary",
  "rules-dispatcher",
+ "rules-flatvm",
+ "rules-parser",
+ "rules-temporal",
  "thiserror",
 ]
 
@@ -1182,7 +1206,9 @@ dependencies = [
  "anyhow",
  "rules-ast",
  "rules-dictionary",
+ "rules-dmn",
  "rules-parser",
+ "rules-runtime",
  "rules-verifier",
  "serde",
  "serde_json",
@@ -1198,11 +1224,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rules-temporal"
+version = "0.2.0"
+dependencies = [
+ "rules-ast",
+ "rules-flatvm",
+ "rules-parser",
+ "serde",
+]
+
+[[package]]
 name = "rules-verifier"
 version = "0.2.0"
 dependencies = [
  "rules-ast",
  "rules-dictionary",
+ "rules-parser",
+ "rules-smt",
  "thiserror",
 ]
 

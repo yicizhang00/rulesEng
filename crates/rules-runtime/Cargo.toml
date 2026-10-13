@@ -11,4 +11,9 @@ path = "src/lib.rs"
 rules-ast = { path = "../rules-ast" }
 rules-dictionary = { path = "../rules-dictionary" }
 rules-dispatcher = { path = "../rules-dispatcher" }
+rules-flatvm = { path = "../rules-flatvm" }
+rules-temporal = { path = "../rules-temporal" }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+rules-parser = { path = "../rules-parser" }

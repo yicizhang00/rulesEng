@@ -1,5 +1,6 @@
 // ============================================================
-//  Temporal Contract DSL — Pest Grammar
+//  Unified Compliance DSL (rulesEng v1.0) — Pest Grammar
+//  四类一阶概念 × 四种执行模式（pure / stateful / stream / decision_table）
 // ============================================================
 
 // ---------- Lexical ----------
@@ -10,117 +11,251 @@ COMMENT    = _{ ("//" ~ (!"\n" ~ ANY)*)
 // ---------- Top-level ----------
 spec_file = { SOI ~ item* ~ EOI }
 item = _{
-      import_decl
-    | type_decl
+      contract_decl
     | entity_decl
-    | event_decl
     | stream_decl
-    | signal_decl
+    | metric_decl
+    | decision_table_decl
+    | stateful_rule
+    | legacy_rule
+    | legacy_signal
     | var_decl
-    | contract_decl
-    | rule_decl
+    | violation_attach
+    | event_decl
+    | import_decl
+    | type_decl
 }
 
-// ---------- Imports ----------
-import_decl = { "import" ~ path_ident ~ ("as" ~ ident)? }
+// ============================================================
+// 契约块（v1.0 容器）：contract <Name> on <Target> <mode>? { ... }
+//   同时兼容经典 `spec X on c: Company { invariant: ... violation {...} }`
+// ============================================================
+contract_decl  = { ("spec" | "contract") ~ ident ~ "on" ~ spec_target ~ mode_modifier? ~ "{" ~ contract_body ~ "}" }
+spec_target    = { entity_target | ident ~ (":" ~ ident)? }
+entity_target  = { "Entity" ~ "[" ~ ident ~ "]" }
+mode_modifier  = { "pure" | "stateful" | "stream" | "decision_table" }
 
-// ---------- Types ----------
-type_decl   = { "type" ~ ident ~ "=" ~ type_expr }
-type_expr   = { scalar_type | list_type | record_type | ident }
-scalar_type = { "int" | "float" | "bool" | "string" | "timestamp" | "duration" }
-list_type   = { "[" ~ type_expr ~ "]" }
-record_type = { "{" ~ field_def ~ ("," ~ field_def)* ~ "}" }
-field_def   = { ident ~ ":" ~ type_expr }
+contract_body  = { contract_member* }
+contract_member = _{
+      key_decl
+    | bind_decl
+    | states_decl
+    | initial_decl
+    | terminal_decl
+    | state_var_decl
+    | transition_block
+    | stream_decl
+    | metric_decl
+    | decision_table_decl
+    | policy_block
+    | var_decl
+    | let_decl
+    | given_block
+    | invariant_clause
+    | violation_block
+}
 
-// ---------- Entities ----------
-entity_decl    = { "entity" ~ ident ~ "{" ~ entity_member* ~ "}" }
-entity_member  = _{
+key_decl        = { "key" ~ ":" ~ ident }
+bind_decl       = { "bind" ~ ":" ~ datasource_ref ~ "." ~ table_ref }
+datasource_ref  = { "Datasource" ~ "[" ~ string_lit ~ "]" }
+table_ref       = { "Table" ~ "[" ~ string_lit ~ "]" }
+states_decl     = { "states" ~ ":" ~ "[" ~ state_const ~ ("," ~ state_const)* ~ "]" }
+state_const     = { ident ~ ("=" ~ uint_lit)? }
+uint_lit        = @{ ("0x" | "0X") ~ ASCII_HEX_DIGIT+ | ASCII_DIGIT+ }
+initial_decl    = { "initial" ~ ":" ~ ident }
+terminal_decl   = { "terminal" ~ ":" ~ "[" ~ ident ~ ("," ~ ident)* ~ "]" }
+state_var_decl  = { "state" ~ "var" ~ ident ~ ":" ~ type_expr ~ "=" ~ expr }
+
+transition_block = { "transition" ~ ident? ~ "{" ~ entity_transition_field* ~ "}" }
+entity_transition_field = _{ tf_from | tf_to | tf_on | tf_when | tf_emit }
+tf_from          = { "from" ~ ":" ~ ident }
+tf_to            = { "to"   ~ ":" ~ ident }
+tf_on            = { "on"   ~ ":" ~ ident }
+tf_when          = { "when" ~ ":" ~ formula }
+tf_emit          = { "emit" ~ ":" ~ string_lit }
+
+// ============================================================
+// 概念 1a：Entity —— 实体生命周期 + 状态机迁移边
+// ============================================================
+entity_decl      = { "entity" ~ ident ~ entity_key_opt? ~ mode_modifier? ~ "{" ~ entity_member* ~ "}" }
+entity_key_opt   = { "(" ~ key_decl ~ ")" }
+entity_member    = _{
       key_decl
     | states_decl
     | initial_decl
-    | transition_decl
-    | entity_invariant
+    | terminal_decl
+    | state_var_decl
+    | transition_block
 }
-key_decl     = { "key:" ~ ident }
-states_decl  = { "states:" ~ "[" ~ ident ~ ("," ~ ident)* ~ "]" }
-initial_decl = { "initial:" ~ ident }
-transition_decl = {
-    "transition" ~ ident ~ "{"
-        ~ "from:" ~ ident
-        ~ "to:"   ~ ident
-        ~ ("when:" ~ formula)?
-        ~ ("emit:" ~ string_lit)?
-    ~ "}"
-}
-entity_invariant = { "invariant:" ~ formula }
 
-// ---------- Events ----------
-event_decl = { "event" ~ ident ~ ("{" ~ field_def ~ ("," ~ field_def)* ~ "}")? }
-
-// ---------- Streams ----------
-stream_decl    = { "stream" ~ ident ~ "=" ~ stream_expr }
-stream_expr    = { stream_primary ~ stream_op* }
-stream_primary = {
-      stream_source
-    | stream_ref
-    | "(" ~ stream_expr ~ ")"
-}
-stream_source = { "Stream" ~ "[" ~ ident ~ "]" }
-stream_ref    = { path_ident | ident }
+// ============================================================
+// 概念 2：Stream & Event —— 事件流算子（投影/过滤/关联/窗口/折叠）
+// ============================================================
+stream_decl        = { "stream" ~ ident ~ (":=" | "=") ~ stream_expr }
+stream_expr        = { stream_source ~ stream_op* }
+stream_source      = { stream_event_types | stream_ref }
+stream_event_types = { ("Event" | "Stream") ~ "[" ~ ident ~ ("," ~ ident)* ~ "]" }
+stream_ref         = { ident }
 
 stream_op = _{
       filter_op
     | map_op
-    | union_op
-    | intersect_op
     | window_op
+    | fold_op
+    | agg_op
+    | join_op
+    | cogroup_op
+    | distinct_op
+    | union_op
 }
-filter_op    = { ".filter(" ~ formula ~ ")" }
-map_op       = { ".map(" ~ formula ~ ")" }
-union_op     = { ".union(" ~ stream_expr ~ ")" }
-intersect_op = { ".intersect(" ~ stream_expr ~ ")" }
-window_op    = { ".window(" ~ duration ~ ")" }
+filter_op   = { "." ~ "filter"   ~ "(" ~ lambda_or_formula ~ ")" }
+map_op      = { "." ~ "map"      ~ "(" ~ lambda_or_formula ~ ")" }
+window_op   = { "." ~ "window"   ~ "(" ~ window_spec ~ ")" }
+window_spec = { window_mode ~ "(" ~ expr ~ ")" | expr }
+window_mode = { "sliding" | "tumbling" }
+fold_op     = { "." ~ "fold"     ~ "(" ~ expr ~ "," ~ lambda2 ~ ")" }
+agg_op      = { "." ~ agg_kind   ~ "(" ~ lambda? ~ ")" }
+join_op     = { "." ~ "join"     ~ "(" ~ ident ~ "," ~ lambda2 ~ ")" }
+cogroup_op  = { "." ~ "coGroup"  ~ "(" ~ ident ~ "," ~ lambda2 ~ ")" }
+distinct_op = { "." ~ "distinct" ~ "(" ~ lambda? ~ ")" }
+union_op    = { "." ~ "union"    ~ "(" ~ ident ~ ")" }
+agg_kind    = { "count" | "sum" | "avg" | "min" | "max" }
 
-// ---------- Signals / Vars ----------
-signal_decl = {
-    "signal" ~ ident ~ "(" ~ ident ~ ":" ~ type_expr ~ ")" ~ "->" ~ type_expr ~ "=" ~ formula
+lambda_or_formula = { lambda | formula }
+lambda        = { lambda_params ~ "=>" ~ expr }
+lambda_params = { ident ~ ("," ~ ident)* }
+lambda2       = { ("(" ~ ident ~ "," ~ ident ~ ")") ~ "=>" ~ expr | ident ~ "," ~ ident ~ "=>" ~ expr }
+
+// ============================================================
+// 概念 1b：Metric —— 动态派生信号流
+// ============================================================
+metric_decl   = { "metric" ~ ident ~ metric_params? ~ ("->" ~ type_expr)? ~ (":=" | "=") ~ metric_body }
+metric_params = { "(" ~ param ~ ("," ~ param)* ~ ")" }
+param         = { ident ~ ":" ~ type_expr }
+metric_body   = { derived_from | metric_scalar }
+derived_from  = { "from" ~ stream_expr }
+metric_scalar = { expr ~ ("where" ~ expr)? }
+
+// 兼容旧写法：signal f(x: T) -> T = expr（解析后 desugar 为 metric）
+legacy_signal = { "signal" ~ ident ~ "(" ~ param ~ ")" ~ "->" ~ type_expr ~ "=" ~ expr }
+
+// FR1：参数化强类型变量声明；无类型无 range 时退化为零元 metric（兼容旧 var）
+var_decl      = { "var" ~ ident ~ (":" ~ type_expr ~ range_clause?)? ~ ("=" ~ expr)? }
+range_clause  = { "range" ~ ":" ~ expr ~ ".." ~ expr }
+
+// ============================================================
+// 概念 3/4：策略块（guard / invariant）
+//   guard IsNotFrozen on Event[OrderIntent] { when: ... verdict: DENY(...) }
+//   invariant ApprovalValidity on Event[CommenceIssuanceIntent] {
+//       guard: (state & CSRC_APPROVED) and !(state & ISSUING)
+//       temporal: days_between(now(), db.approval_date) > 365
+//       on_violation: DENY(code: "ERR_APPROVAL_EXPIRED", reason: "…")
+//   }
+// ============================================================
+policy_block   = { policy_kw ~ ident ~ ("on" ~ event_list)? ~ "{" ~ policy_field* ~ "}" }
+policy_kw      = { "guard" | "invariant" }
+event_list     = { "Event" ~ "[" ~ ident ~ ("," ~ ident)* ~ "]" }
+policy_field   = _{
+      when_field
+    | guard_field
+    | temporal_field
+    | verdict_field
+    | on_violation_field
+    | severity_field
+    | emit_field
+    | transition_field
+    | let_decl
 }
-var_decl = { "var" ~ ident ~ (":" ~ type_expr)? ~ "=" ~ formula }
+when_field        = { "when" ~ ":" ~ formula }
+guard_field       = { "guard" ~ ":" ~ formula }
+temporal_field    = { "temporal" ~ ":" ~ formula }
+verdict_field     = { "verdict" ~ ":" ~ verdict_effects }
+on_violation_field= { "on_violation" ~ ":" ~ verdict_effects }
+verdict_effects   = { verdict_expr ~ ("," ~ effect_expr)* }
+verdict_expr      = { allow_expr | deny_expr }
+allow_expr        = { "ALLOW" ~ "(" ~ ")" }
+deny_expr         = { "DENY" ~ "(" ~ "code" ~ ":" ~ string_lit ~ "," ~ "reason" ~ ":" ~ string_lit ~ ")" }
+effect_expr       = { lease_update | emit_effect }
+lease_update      = { "LeaseUpdate" ~ "(" ~ ident ~ "=" ~ expr ~ ")" }
+emit_effect       = { "Emit" ~ "(" ~ string_lit ~ ")" }
 
-// ---------- Contracts ----------
-contract_decl = { "contract" ~ ident ~ "on" ~ ident ~ "{" ~ contract_body ~ "}" }
-contract_body = {
-      let_decl*
-    ~ ("assume:"    ~ formula)*
-    ~ ("invariant:" ~ formula)+
-    ~ ("guarantee:" ~ formula)*
-    ~ violation_block
-}
-let_decl = { "let" ~ ident ~ (":" ~ type_expr)? ~ "=" ~ formula }
+// 经典 spec 形态
+spec_body         = { let_decl* ~ given_block? ~ let_decl* ~ invariant_clause+ ~ violation_block }
+given_block       = { "given" ~ ":" ~ let_decl* }
+invariant_clause  = { "invariant" ~ ":" ~ formula }
+let_decl          = { "let" ~ let_target ~ "=" ~ expr }
+let_target        = { "(" ~ ident ~ ("," ~ ident)* ~ ")" | ident }
+violation_block   = { "violation" ~ "{" ~ violation_field* ~ "}" }
+// 独立挂载形式：violation on <SpecName> { ... }
+violation_attach  = { "violation" ~ "on" ~ ident ~ "{" ~ violation_field* ~ "}" }
+violation_field   = _{ severity_field | guard_field | transition_field | emit_field }
+severity_field    = { "severity" ~ ":" ~ severity }
+transition_field  = { "transition" ~ ":" ~ (path_ident | ident) ~ "->" ~ ident }
+emit_field        = { "emit" ~ ":" ~ string_lit }
+severity          = { "INFO" | "WARNING" | "CRITICAL" }
 
-violation_block = { "violation" ~ "{" ~ violation_field* ~ "}" }
-violation_field = _{ severity_field | guard_field | transition_field | emit_field }
-severity_field   = { "severity:" ~ severity }
-guard_field      = { "guard:" ~ formula }
-transition_field = { "transition:" ~ ident ~ "->" ~ ident }
-emit_field       = { "emit:" ~ string_lit }
-severity         = { "INFO" | "WARNING" | "CRITICAL" }
+// ============================================================
+// 模式 D：DMN 决策表
+// ============================================================
+decision_table_decl = { "decision_table" ~ ident ~ "(" ~ param ~ ("," ~ param)* ~ ")"
+                      ~ "->" ~ dt_outputs ~ "{" ~ dt_hit_policy ~ dt_rules ~ "}" }
+dt_outputs     = { "(" ~ param ~ ("," ~ param)* ~ ")" }
+dt_hit_policy  = { "hit_policy" ~ ":" ~ hit_policy }
+dt_rules       = { "rules" ~ ":" ~ "[" ~ dt_row* ~ "]" }
+dt_row         = { dt_default_row | dt_input_row }
+dt_default_row = { "default" ~ "=>" ~ dt_output_tuple ~ ","? }
+dt_input_row   = { (dt_range_entry | dt_expr_entry) ~ "=>" ~ dt_output_tuple ~ ","? }
+dt_range_entry = { "in" ~ "[" ~ dt_bound ~ ".." ~ dt_bound ~ "]" }
+dt_bound       = { date_lit | expr }
+dt_expr_entry  = { expr }
+dt_output_tuple= { "(" ~ expr ~ ("," ~ expr)* ~ ")" }
+hit_policy     = { "UNIQUE" | "FIRST" | "PRIORITY" | "COLLECT" | "U" | "F" | "P" | "C" }
+date_lit       = @{ ASCII_DIGIT{2} ~ "-" ~ ASCII_DIGIT{2} }
 
-// ---------- Rule sugar ----------
-rule_decl    = { "rule" ~ ident ~ "on" ~ ident ~ "when" ~ formula ~ "then" ~ action_block }
-action_block = { "{" ~ action_field* ~ "}" }
-action_field = _{ severity_field | guard_field | transition_field | emit_field }
+// ============================================================
+// 模式 B：受限工作内存规则（Drools 兼容）
+// ============================================================
+stateful_rule   = { "rule" ~ string_lit ~ "stateful" ~ "{" ~ rule_when ~ rule_then ~ "}" }
+rule_when       = { "when" ~ ":" ~ pattern_item+ }
+pattern_item    = { negative_pattern | positive_pattern }
+negative_pattern= { "not" ~ "exists" ~ pattern_core }
+// `then:` 终结 when 子句，需负向前瞻避免被当作 `$x: Type(...)` 绑定模式。
+positive_pattern= { !("then" ~ ":") ~ pattern_core }
+pattern_core    = { pattern_binding? ~ ident ~ "(" ~ pattern_constraint? ~ ")" }
+pattern_binding = { ident ~ ":" }
+pattern_constraint = { expr ~ ("," ~ expr)* }
+rule_then       = { "then" ~ ":" ~ rule_action+ }
+rule_action     = { insert_action | retract_action | yield_action }
+insert_action   = { "insert" ~ "(" ~ ident ~ insert_fields? ~ ")" ~ ";"? }
+insert_fields   = { "{" ~ field_assign ~ ("," ~ field_assign)* ~ "}" }
+field_assign    = { ident ~ ":" ~ expr }
+retract_action  = { "retract" ~ "(" ~ ident ~ ")" ~ ";"? }
+yield_action    = { "yield" ~ verdict_expr ~ ";"? }
 
-// ---------- Temporal formulas ----------
+// 兼容旧写法：rule X on E when P then { ... }（解析后 desugar 为 spec）
+legacy_rule  = { "rule" ~ ident ~ "on" ~ ident ~ "when" ~ formula ~ "then" ~ action_block }
+action_block = { "{" ~ violation_field* ~ "}" }
+
+// ---------- 其余顶层声明（解析后忽略，保持向前兼容） ----------
+event_decl  = { "event" ~ ident ~ ("{" ~ event_field* ~ "}")? }
+event_field = { ident ~ ":" ~ type_expr }
+import_decl = { "import" ~ path_ident ~ ("as" ~ ident)? }
+type_decl   = { "type" ~ ident ~ "=" ~ type_expr }
+
+// ============================================================
+// 时序公式（度量时序逻辑 MTL）
+// ============================================================
 formula   = { f_implies }
-f_implies = { f_or ~ ("implies" ~ f_implies)? }        // 右结合
+f_implies = { f_or ~ ("implies" ~ f_implies)? }          // 右结合
 f_or      = { f_and ~ ("or" ~ f_and)* }
 f_and     = { f_not ~ ("and" ~ f_not)* }
-f_not     = { ("not" ~ f_not) | f_atom }
+f_not     = { (kw_not ~ f_not) | ("!" ~ f_not) | f_atom }
+kw_not    = @{ "not" ~ !ident_char }
+ident_char= _{ ASCII_ALPHANUMERIC | "_" }
 
 f_atom = {
       temporal_op
-    | quantifier_op
+    | stream_quant
     | predicate
     | "(" ~ formula ~ ")"
 }
@@ -133,40 +268,60 @@ temporal_op = _{
     | until_op
     | since_op
     | within_op
-    | next_op
+    | reaches_op
 }
 
-always_op       = { "always" ~ "(" ~ formula ~ ")" }
-eventually_op   = { "eventually" ~ "(" ~ formula ~ ")" }
-historically_op = { "historically" ~ "(" ~ formula ~ ("," ~ "within:" ~ duration)? ~ ")" }
-once_op         = { "once" ~ "(" ~ formula ~ ("," ~ "within:" ~ duration)? ~ ")" }
-until_op        = { "until" ~ "(" ~ formula ~ "," ~ formula ~ ")" }
-since_op        = { "since" ~ "(" ~ formula ~ "," ~ formula ~ ")" }
-within_op       = { "within" ~ "(" ~ duration ~ "," ~ formula ~ ")" }
-next_op         = { "next" ~ "(" ~ formula ~ ")" }
+always_op       = { "always"       ~ "(" ~ formula ~ ")" }
+eventually_op   = { "eventually"   ~ "(" ~ formula ~ ("," ~ "within" ~ ":" ~ expr)? ~ ")" }
+historically_op = { "historically" ~ "(" ~ formula ~ ("," ~ "within" ~ ":" ~ expr)? ~ ")" }
+once_op         = { "once"         ~ "(" ~ formula ~ ("," ~ "within" ~ ":" ~ expr)? ~ ")" }
+until_op        = { "until"        ~ "(" ~ formula ~ "," ~ formula ~ ")" }
+since_op        = { "since"        ~ "(" ~ formula ~ "," ~ formula ~ ")" }
+within_op       = { "within"       ~ "(" ~ expr ~ "," ~ formula ~ ")" }
+// FR6：边缘跃迁算子
+reaches_op        = { crosses_above_op | crosses_below_op }
+crosses_above_op  = { "crosses_above" ~ "(" ~ ident ~ "," ~ expr ~ ")" }
+crosses_below_op  = { "crosses_below" ~ "(" ~ ident ~ "," ~ expr ~ ")" }
 
-quantifier_op = _{ exists_op | forall_op }
-exists_op = { "exists" ~ "(" ~ stream_ref ~ ("," ~ "within:" ~ duration)? ~ ")" }
-forall_op = { "forall" ~ "(" ~ stream_ref ~ ("," ~ "within:" ~ duration)? ~ ")" }
+// 流量化：Stream.exists(e => P) / .forall(...) / .count(...)
+stream_quant  = { ident ~ "." ~ quant_op }
+quant_op      = { quant_exists | quant_forall | quant_count }
+quant_exists  = { "exists" ~ "(" ~ lambda? ~ ")" }
+quant_forall  = { "forall" ~ "(" ~ lambda? ~ ")" }
+quant_count   = { "count"  ~ "(" ~ lambda? ~ ")" }
 
 predicate = { expr }
 
-// ---------- Scalar expressions ----------
-expr     = { cmp_expr }
+// ============================================================
+// 标量表达式
+// ============================================================
+expr     = { or_bits_expr }
+or_bits_expr = { and_bits_expr ~ (or_bits_op ~ and_bits_expr)* }
+or_bits_op   = { "|" }
+and_bits_expr = { shift_expr ~ (and_bits_op ~ shift_expr)* }
+and_bits_op   = { "&" }
+shift_expr = { cmp_expr ~ (shift_op ~ cmp_expr)* }
+shift_op  = { "<<" | ">>" }
 cmp_expr = { add_expr ~ (cmp_op ~ add_expr)? }
 cmp_op   = { ">=" | "<=" | "==" | "!=" | ">" | "<" }
 
 add_expr = { mul_expr ~ (add_op ~ mul_expr)* }
 add_op   = { "+" | "-" }
 
-mul_expr = { primary ~ (mul_op ~ primary)* }
+mul_expr = { unary_expr ~ (mul_op ~ unary_expr)* }
 mul_op   = { "*" | "/" | "%" }
+
+unary_expr = { unary_op ~ unary_expr | primary }
+unary_op   = { "!" | "-" }
 
 primary = {
       duration
+    | hex
     | number
     | string_lit
     | bool_lit
+    | stream_agg_expr
+    | path_call_expr
     | call_expr
     | path_ident
     | ident
@@ -174,9 +329,18 @@ primary = {
 }
 
 call_expr  = { ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+// 流上的聚合调用：`Trades.count()` / `Cancels.sum()` / `Reports.max()`。
+// 编译为 `Expr::Call { func: "Trades.count", .. }`，由运行时投影到环形缓冲区扫描。
+path_call_expr = { path_ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+// 按事件类型切片后聚合：`SeatActions[OrderIntent].count`（FR6 / 用例 1）。
+stream_agg_expr = { ident ~ "[" ~ ident ~ "]" ~ "." ~ agg_kind ~ ("(" ~ ")")? }
 path_ident = @{ ident ~ ("." ~ ident)+ }
-ident      = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+ident      = @{ "$"? ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+hex        = @{ ("0x" | "0X") ~ ASCII_HEX_DIGIT+ }
 number     = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
-string_lit = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+string_lit = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 bool_lit   = { "true" | "false" }
 duration   = @{ ASCII_DIGIT+ ~ ("s" | "m" | "h" | "d" | "w" | "y") }
+// 类型名接受任意标识符（int / float / Timestamp / Date / Company / bitvec / ...），
+// 未知类型由 parser 归一化为 float。
+type_expr  = { ident }

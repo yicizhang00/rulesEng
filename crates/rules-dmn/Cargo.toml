@@ -1,0 +1,15 @@
+[package]
+name = "rules-dmn"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "rules_dmn"
+path = "src/lib.rs"
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rules-parser = { path = "../rules-parser" }

@@ -1,20 +1,50 @@
-// 半年报披露逾期停牌规则（对应原型 main.rs 示例）
-entity Company {
-    key: code
+// ============================================================================
+//  半年报披露逾期停牌 —— 时序生命周期约束（Temporal Contract）
+//
+//  注意这里的范式：声明的是「合法状态空间是什么」，而不是 "when 条件 then 动作"。
+//  引擎负责求解什么时候打破了不变量；`DaysOverdue` 是 DSL 内部的派生信号，
+//  微服务不需要再写一段上游聚合去算"逾期了几天"。
+// ============================================================================
+
+// ---- 概念 1a：Entity —— 实体生命周期 + 确定性状态迁移边 ----
+entity Company(key: code) {
     states: [NORMAL, SUSPENDED, TERMINATED]
     initial: NORMAL
+    terminal: [TERMINATED]
+
+    transition Suspend {
+        from: NORMAL
+        to: SUSPENDED
+        on: SemiAnnualDeadline
+        emit: "trading suspended"
+    }
+    transition Reinstate { from: SUSPENDED to: NORMAL }
+    transition Terminate { from: SUSPENDED to: TERMINATED }
 }
 
-stream ValidSemiReports = Stream[DisclosureEvent].filter(event.type == "SEMI_ANNUAL")
+// ---- 概念 2：Stream & Event —— 事件流算子（过滤 + 滑动窗口） ----
+stream SemiAnnualReports := Event[DisclosureEvent]
+    .filter(e => e.type == "SEMI_ANNUAL")
+    .window(60d)
 
-contract SemiAnnualCompliance on Company {
-    let deadline = 100000.0
+// ---- 概念 1b：Metric —— 动态派生信号流（带 where 守卫） ----
+// 逾期天数只在过了截止期之后才产生信号，否则为 0。
+metric DaysOverdue(c: Company, deadline: Timestamp) -> int :=
+    days_between(now(), deadline) where now() > deadline
+
+// ---- 概念 3：Spec —— 时序不变量（MTL） ----
+spec SemiAnnualDeadline on c: Company {
+    given:
+        let deadline = 100000.0
+
     invariant:
-        (now() > deadline) implies historically(exists(ValidSemiReports), within: 60d)
+        (now() > deadline) implies
+            historically(SemiAnnualReports.exists(r => r.code == c.code), within: 60d)
 
+    // ---- 概念 4：StateMachine & Violation —— 违规处置是状态迁移而非脚本副作用 ----
     violation {
         severity: CRITICAL
-        guard: DaysOverdue(deadline) > 5.0
+        guard: DaysOverdue(c, deadline) > 5
         transition: NORMAL -> SUSPENDED
         emit: "Overdue semi-annual disclosure > 5 days. Trading suspended."
     }

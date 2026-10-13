@@ -1,25 +1,41 @@
-// 演示动态 var 绑定：运行时数据字典注入"年报审计意见"字段。
-// 原 Schema 里没有"年报""审计意见"，通过 var + external binding 接入。
-entity Company {
-    key: code
+// ============================================================================
+//  动态派生指标：原 schema 里没有"审计意见"这个字段，也不需要改引擎或加列。
+//
+//  旧写法 `var x = expr` 现在统一提升为「零元 metric」——它是一个持续计算的
+//  信号（Derived Signal），而不是外挂参数：运行时通过
+//  `DataDictionary::set_external("AuditEvent.opinion_clean", ...)` 注入取值；
+//  未登记时按保守值参与判定，校验器只给 warning 不阻断入库。
+// ============================================================================
+
+entity Company(key: code) {
     states: [NORMAL, WATCH, TERMINATED]
     initial: NORMAL
+    terminal: [TERMINATED]
+
+    transition ToWatch { from: NORMAL to: WATCH on: AnnualReportOnTime }
+    transition Close   { from: WATCH  to: TERMINATED }
 }
 
-stream AnnualReports = Stream[DisclosureEvent].filter(event.type == "ANNUAL")
+stream AnnualReports := Event[DisclosureEvent]
+    .filter(e => e.type == "ANNUAL")
+    .window(120d)
 
-// 动态变量：审计意见类型。运行时由 DataDictionary.set_external 注入。
-var audit_opinion_clean = DisclosureEvent.audit_opinion == "UNQUALIFIED"
+// 外部注入的派生指标（等号右边引用了一个 schema 里不存在的字段）
+metric audit_opinion_clean := AuditEvent.opinion_clean == "UNQUALIFIED"
 
-contract AnnualReportOnTime on Company {
-    let annual_deadline = 200000.0
+spec AnnualReportOnTime on c: Company {
+    given:
+        let annual_deadline = 200000.0
+
     invariant:
-        (now() > annual_deadline) implies historically(exists(AnnualReports), within: 120d)
+        (now() > annual_deadline) implies
+            historically(AnnualReports.exists(r => r.code == c.code), within: 120d)
 
     violation {
         severity: WARNING
-        guard: DaysOverdue(annual_deadline) > 10.0
+        // guard 是纯布尔组合：逾期 10 天以上 **且** 审计意见非标准
+        guard: DaysOverdue(annual_deadline) > 10 and not audit_opinion_clean
         transition: NORMAL -> WATCH
-        emit: "Annual report overdue > 10 days. Company moved to watch list."
+        emit: "Annual report overdue > 10 days with unqualified audit opinion."
     }
 }

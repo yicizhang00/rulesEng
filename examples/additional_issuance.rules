@@ -1,0 +1,38 @@
+// ============================================================================
+//  §5 用例 2 —— 上市公司再融资批文有效期合规（模式 A：Verified 纯函数）
+//  对应验收标准 AC3：
+//    批文（CSRC_APPROVED）后停滞 10 天零消耗；
+//    第 400 天启动发行 → DB 代理层回滚（DENY + 事务拦截）。
+//
+//  单调状态格：`state |= 位`；`state & MASK` 即"是否已达成某阶段"。
+//  状态位的推进来自**外部事实**（批文下达、发行完成），由 PEP 放行后的
+//  业务侧通过 `set_state_bits` 写入——DSL 本身不做过程式赋值。
+// ============================================================================
+
+contract AdditionalIssuanceCompliance on Entity[Company] pure {
+    key: company_code
+
+    // FR8：非侵入式数据源绑定（批文日期从 issuance_db.t_project 动态读入）。
+    // 本地回退模式下 `db.<field>` 解析为同名实体状态变量 / 全局字典项。
+    bind: Datasource["issuance_db"].Table["t_project"]
+
+    // 批文日期（秒）。批文下达时与 CSRC_APPROVED 位一起写入。
+    state var approval_date: Timestamp = 0
+
+    // FR5：32/64 位定宽位向量（单调状态格）
+    states: [
+        BOARD_RESOLVED       = 0x01,
+        SHAREHOLDER_APPROVED = 0x02,
+        CSRC_APPROVED        = 0x04,
+        ISSUING              = 0x08
+    ]
+
+    // 不变量：已取得批文且尚未发行 ⇒ 距批文日不得 > 365 天
+    invariant ApprovalValidity on Event[CommenceIssuanceIntent] {
+        guard: (state & CSRC_APPROVED) and !(state & ISSUING)
+        temporal: days_between(now(), db.approval_date) > 365
+        on_violation: DENY(
+            code: "ERR_APPROVAL_EXPIRED",
+            reason: "批文有效期 12 个月已届满，禁止启动发行")
+    }
+}

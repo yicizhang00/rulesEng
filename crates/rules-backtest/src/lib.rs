@@ -29,12 +29,16 @@ pub struct BacktestReport {
 pub fn replay(dsl_src: &str, events: Vec<Event>) -> Result<BacktestReport, String> {
     let spec = parse(dsl_src).map_err(|e| format!("parse: {e}"))?;
     let dict = DataDictionary::default();
-    Verifier::verify(&spec, &dict).map_err(|es| {
-        es.iter()
-            .map(|e| e.to_string())
+    // 只被 errors 阻断；warnings（覆盖缺口 / 可达性提示）放行
+    let report = Verifier::verify_report(&spec, &dict);
+    if !report.is_ok() {
+        return Err(report
+            .errors
+            .iter()
+            .map(|e| format!("[{}] {}", e.kind, e.message))
             .collect::<Vec<_>>()
-            .join("; ")
-    })?;
+            .join("; "));
+    }
 
     let disp = Arc::new(VecDispatcher::new());
     let mut engine = RegulatoryRuntime::new(spec, dict).with_dispatcher(disp.clone());
@@ -86,11 +90,17 @@ mod tests {
     use super::*;
 
     const SRC: &str = r#"
-        entity Company { key: code states: [NORMAL, SUSPENDED, TERMINATED] initial: NORMAL }
-        stream R = Stream[DisclosureEvent].filter(event.type == "SEMI_ANNUAL")
-        contract C on Company {
-            let deadline = 100000.0
-            invariant: (now() > deadline) implies historically(exists(R), within: 60d)
+        entity Company(key: code) {
+            states: [NORMAL, SUSPENDED, TERMINATED]
+            initial: NORMAL
+            terminal: [TERMINATED]
+            transition Suspend { from: NORMAL to: SUSPENDED on: C }
+        }
+        stream R := Event[DisclosureEvent].filter(e => e.type == "SEMI_ANNUAL")
+        spec C on c: Company {
+            given:
+                let deadline = 100000.0
+            invariant: (now() > deadline) implies historically(R.exists(), within: 60d)
             violation {
                 severity: CRITICAL
                 guard: DaysOverdue(deadline) > 5.0

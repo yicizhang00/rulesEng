@@ -12,6 +12,8 @@ rules-ast = { path = "../rules-ast" }
 rules-parser = { path = "../rules-parser" }
 rules-verifier = { path = "../rules-verifier" }
 rules-dictionary = { path = "../rules-dictionary" }
+rules-runtime = { path = "../rules-runtime" }
+rules-dmn = { path = "../rules-dmn" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { version = "0.7", features = ["mysql", "runtime-tokio-native-tls", "json"] }

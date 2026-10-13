@@ -1,0 +1,41 @@
+// ============================================================================
+//  派生信号流（Derived Signal）+ 滑动折叠 / 聚合
+//
+//  关键对比：Drools 里"撤单率异常"必须由微服务先算好 `cancel_ratio` 字段塞进事实，
+//  规则引擎只能做阈值比较。这里 `CancelRatio` / `CancelNotional` 是 DSL 内部的
+//  派生流算子，新增监管条目（撤单率、质押率、半年报 …）都只改 DSL，不改上游服务。
+// ============================================================================
+
+entity Account(key: account_id) {
+    states: [ACTIVE, RESTRICTED, CLOSED]
+    initial: ACTIVE
+    terminal: [CLOSED]
+
+    transition Restrict { from: ACTIVE     to: RESTRICTED on: CancelRatioBreach }
+    transition Close    { from: RESTRICTED to: CLOSED }
+}
+
+// ---- 概念 2：流 + 投影（filter 即投影） ----
+stream Trades  := Event[TradeEvent].window(1h)
+stream Cancels := Trades.filter(t => t.kind == "CANCEL")
+
+// ---- 概念 1b：派生信号（滑动聚合 / 滑动折叠） ----
+metric CancelRatio(c: Account) -> float :=
+    ratio(Cancels.count(), Trades.count()) where Trades.count() > 0.0
+
+metric CancelNotional(c: Account) -> float :=
+    from Cancels.fold(0.0, (acc, t) => acc + t.amount)
+
+// ---- 概念 3 + 4：时序不变量 + 确定性迁移 ----
+spec CancelRatioBreach on c: Account {
+    // `always` 是一条 latch：一旦窗口内撤单占比越过阈值即永久违反
+    invariant:
+        always(CancelRatio(c) < 0.2)
+
+    violation {
+        severity: WARNING
+        guard: CancelNotional(c) > 1000.0
+        transition: ACTIVE -> RESTRICTED
+        emit: "Cancel ratio breach with notional above threshold."
+    }
+}

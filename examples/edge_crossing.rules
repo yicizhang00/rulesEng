@@ -1,0 +1,48 @@
+// ============================================================================
+//  FR6 配套示例 —— 边缘跃迁算子（crosses_above / crosses_below）
+//
+//  为什么需要它：阈值型风控最怕"告警风暴"。若把规则写成
+//      when: order_count > 10
+//  那么一旦计数停在 11，**后续每一拍都会重复告警**——业务方要么漏看，
+//  要么被迫在上游加消抖逻辑（这就是 Drools 里常见的 `no-loop` 补丁）。
+//
+//  `crosses_above(metric, k)` 只承认"由下向上穿过 k 的那一拍"，
+//  高位保持期间自动抑制；`crosses_below` 对称地只承认回落到 k 以下的那一拍。
+//  两侧位（edge_side）存在状态机里，仍然是 O(1) 记忆单元，
+//  **不需要任何后台定时器或额外的去重表**。
+//
+//  该文件的期望运行轨迹（对应 crates/rules-runtime/tests/acceptance_v1.rs）：
+//      第 1..9 笔    ALLOW（未达阈值，首拍不触发）
+//      第 10 笔      DENY:ERR_EDGE_UP     ← 唯一一次向上跃迁（计数达到 10）
+//      第 11..20 笔  ALLOW（高位保持，被抑制）
+//      窗口滑过以后  DENY:ERR_EDGE_DOWN   ← 唯一一次向下跃迁
+//
+//  阈值为**闭区间**：计数达到 10 即算越过（`v >= k` → 高位侧）。
+// ============================================================================
+
+contract SeatEdgeProbe on Entity[Seat] stream {
+    key: seat_id
+
+    // 5 秒滑动窗口上的报单计数（无锁双端队列 O(1) 淘汰）
+    stream SeatActions := Stream[OrderIntent]
+        .filter(e => e.seat_id == seat_id)
+        .window(sliding(5s))
+
+    metric order_count = sum(SeatActions[OrderIntent].count)
+
+    // ---- 向上跃迁：计数首次越过 10 ----
+    invariant UpEdge on Event[OrderIntent] {
+        when: crosses_above(order_count, 10)
+        verdict: DENY(
+            code: "ERR_EDGE_UP",
+            reason: "5 秒窗口内报单量首次越过 10 笔")
+    }
+
+    // ---- 向下跃迁：计数首次回落到 10 以下（窗口滑出）----
+    invariant DownEdge on Event[OrderIntent] {
+        when: crosses_below(order_count, 10)
+        verdict: DENY(
+            code: "ERR_EDGE_DOWN",
+            reason: "5 秒窗口内报单量首次回落到 10 笔以下")
+    }
+}

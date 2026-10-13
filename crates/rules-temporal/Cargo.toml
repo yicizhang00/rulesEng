@@ -1,0 +1,13 @@
+[package]
+name = "rules-temporal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rules-ast = { path = "../rules-ast" }
+rules-flatvm = { path = "../rules-flatvm" }
+serde = { workspace = true }
+
+[dev-dependencies]
+rules-parser = { path = "../rules-parser" }

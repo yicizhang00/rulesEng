@@ -1,18 +1,34 @@
-// 演示 until 算子：停牌状态必须持续直到整改报告上传。
-entity Company {
-    key: code
+// ============================================================================
+//  until：时序释放条件 —— 摘牌必须等待整改报告，而不是"到点就做动作"
+//
+//  until(p, q) 的语义：p 必须一直成立，直到 q 首次成立。
+//  这里用它表达一条监管红线：**未收到整改报告之前，公司不得进入终态**。
+// ============================================================================
+
+entity Company(key: code) {
     states: [NORMAL, SUSPENDED, REMEDIATING, TERMINATED]
     initial: NORMAL
+    terminal: [TERMINATED]
+
+    transition Suspend  { from: NORMAL      to: SUSPENDED   on: TerminationRequiresRemediation }
+    transition StartFix { from: SUSPENDED   to: REMEDIATING }
+    transition Close    { from: REMEDIATING to: TERMINATED }
 }
 
-stream RemediationReports = Stream[RemediationEvent].filter(event.type == "REMEDIATION_OK")
+stream RemediationReports := Event[RemediationEvent]
+    .filter(e => e.type == "REMEDIATION_OK")
+    .window(365d)
 
-contract SuspensionUntilRemediation on Company {
+spec TerminationRequiresRemediation on c: Company {
+    // 「未进入终态」必须一直成立，直到出现一份合格的整改报告
     invariant:
-        historically(exists(RemediationReports), within: 365d) implies always(true)
+        until(
+            not (state == TERMINATED),
+            RemediationReports.exists(r => r.code == c.code)
+        )
 
     violation {
         severity: WARNING
-        emit: "No remediation report received within 365d after suspension."
+        emit: "Company reached TERMINATED before uploading a remediation report."
     }
 }
